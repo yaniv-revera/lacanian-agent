@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>—</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<main id="app">
+
+  <!-- login -->
+  <section id="login" class="screen">
+    <p class="lede">This is a machine. It is not therapy and not a substitute for a person.</p>
+    <form id="email-form" autocomplete="off">
+      <label for="email">Email</label>
+      <input id="email" type="email" inputmode="email" required />
+      <button type="submit">Continue</button>
+    </form>
+    <form id="code-form" class="hidden" autocomplete="off">
+      <label for="code">Code</label>
+      <input id="code" type="text" inputmode="numeric" maxlength="6" required />
+      <button type="submit">Enter</button>
+      <p class="hint" id="code-hint"></p>
+    </form>
+    <p class="err" id="login-err"></p>
+  </section>
+
+  <!-- locked -->
+  <section id="locked" class="screen hidden">
+    <p class="lede">The session was ended.</p>
+    <p class="countdown" id="countdown"></p>
+    <p class="hint">
+      If you are in crisis, do not wait for this. Contact your local emergency number
+      or a crisis line where you are, or tell someone you trust.
+    </p>
+  </section>
+
+  <!-- session -->
+  <section id="session" class="screen hidden">
+    <div id="thread" aria-live="polite"></div>
+    <div id="ended" class="hidden">
+      <p class="hint" id="ended-note"></p>
+    </div>
+    <form id="say-form" autocomplete="off">
+      <textarea id="say" rows="1" placeholder="" aria-label="Say whatever comes"></textarea>
+      <button type="submit" id="send" aria-label="Send">→</button>
+    </form>
+  </section>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
