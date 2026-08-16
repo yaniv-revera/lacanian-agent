@@ -100,6 +100,38 @@ t('act numbers up to A20 parse', () => {
   assert.equal(parseTurn('<work>act: A9</work><say>x</say>').act, 'A9');
 });
 
+t('gate field starting with none plus reasoning does not fire the gate', () => {
+  const p = parseTurn(
+    '<work>gate: none — "afraid of death" alone is not suicidal ideation\nact: A1 — punctuating</work>\n<say>Afraid.</say>'
+  );
+  assert.equal(p.gateFired, false);
+  assert.equal(p.mode, 'ANALYTIC');
+  assert.equal(p.act, 'A1');
+});
+
+t('gate field starting with no or clear does not fire the gate', () => {
+  const noField = parseTurn('<work>gate: no immediate risk here\nact: A3</work>\n<say>x</say>');
+  assert.equal(noField.gateFired, false);
+
+  const clearField = parseTurn('<work>gate: clear, nothing gate-worthy\nact: A3</work>\n<say>x</say>');
+  assert.equal(clearField.gateFired, false);
+});
+
+t('act field merely mentioning GATE elsewhere does not fire the gate', () => {
+  const p = parseTurn(
+    '<work>gate: none\nact: A3 — considered routing to GATE but ruled it out</work>\n<say>x</say>'
+  );
+  assert.equal(p.gateFired, false);
+  assert.equal(p.act, 'A3');
+});
+
+t('a real gate field with content fires even without act starting GATE', () => {
+  const p = parseTurn('<work>gate: suicidal ideation, explicit plan\nact: A9</work>\n<say>Let me stop.</say>');
+  assert.equal(p.gateFired, true);
+  assert.equal(p.mode, 'GATE');
+  assert.equal(p.act, 'GATE');
+});
+
 // --- audit ---
 
 function pt(over: Partial<ParsedTurn>): ParsedTurn {
@@ -157,6 +189,43 @@ t('a long analytic turn is flagged', () => {
     recentActs: [], mode: 'ANALYTIC', turnCount: 5,
   });
   assert.ok(f.some((x) => x.startsWith('analytic_turn_over_40_words')));
+});
+
+t('A20 required speech is not flagged for advice even though it says "you should"', () => {
+  const f = auditTurn(pt({ act: 'A20', say: "I don't know what you should do." }), {
+    recentActs: [], mode: 'ANALYTIC', turnCount: 5,
+  });
+  assert.ok(!f.includes('advice'));
+});
+
+t('A13 required speech is not flagged for advice, normalisation, or claimed feeling', () => {
+  const f = auditTurn(
+    pt({ act: 'A13', say: 'Many people feel this way, and I understand you should call someone instead.' }),
+    { recentActs: [], mode: 'ANALYTIC', turnCount: 5 }
+  );
+  assert.ok(!f.includes('advice'));
+  assert.ok(!f.includes('normalisation'));
+  assert.ok(!f.includes('claimed_feeling_or_presence'));
+});
+
+t('a §4.6a correction is not flagged for advice or claimed feeling', () => {
+  const f = auditTurn(
+    pt({
+      act: 'A1',
+      work: 'act: A1 — §4.6a correction of falsehood',
+      say: 'Not calling her did not give her cancer. I understand you should not carry that.',
+    }),
+    { recentActs: [], mode: 'ANALYTIC', turnCount: 5 }
+  );
+  assert.ok(!f.includes('advice'));
+  assert.ok(!f.includes('claimed_feeling_or_presence'));
+});
+
+t('non-exempt acts are still flagged for advice', () => {
+  const f = auditTurn(pt({ act: 'A3', say: 'You should try that.' }), {
+    recentActs: [], mode: 'ANALYTIC', turnCount: 5,
+  });
+  assert.ok(f.includes('advice'));
 });
 
 console.error(`\n  ${passed} guard tests passed\n`);

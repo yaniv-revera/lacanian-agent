@@ -28,9 +28,11 @@ export function parseTurn(raw: string): ParsedTurn {
   const gateField = (field(work, 'gate') ?? '').toLowerCase();
   const modeField = (field(work, 'mode') ?? '').toUpperCase();
 
-  const gateFired =
-    /\bGATE\b/.test(actField.toUpperCase()) ||
-    (gateField !== '' && gateField !== 'none' && gateField !== 'clear');
+  const gateFieldClear = /^(none|no|clear)\b/.test(gateField);
+  const gateFieldFired = gateField !== '' && !gateFieldClear;
+  const actStartsGate = /^GATE\b/.test(actField.trim().toUpperCase());
+
+  const gateFired = actStartsGate || gateFieldFired;
 
   let mode: Mode = 'ANALYTIC';
   if (gateFired) mode = 'GATE';

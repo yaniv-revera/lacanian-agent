@@ -75,6 +75,13 @@ export function isChallengeAct(act: string | null): boolean {
   return act !== null && CHALLENGE_ACTS.has(act);
 }
 
+const REQUIRED_SPEECH_ACTS = new Set(['A13', 'A20']);
+
+/** A13, A20 and §4.6a corrections are required speech; the required-speech-shaped checks don't apply to them. */
+function isRequiredSpeechTurn(p: ParsedTurn): boolean {
+  return (p.act !== null && REQUIRED_SPEECH_ACTS.has(p.act)) || /4\.6a/.test(p.work);
+}
+
 export interface AuditContext {
   recentActs: string[];
   mode: ParsedTurn['mode'];
@@ -110,14 +117,16 @@ export function auditTurn(p: ParsedTurn, ctx: AuditContext): string[] {
     if (/\b(exactly|right|i see what you mean|that makes sense|absolutely)\b/i.test(p.say))
       flags.push('mirror_check_comprehension_display');
 
-    if (/\b(many people|most people|it'?s normal|that'?s common)\b/i.test(p.say))
-      flags.push('normalisation');
+    if (!isRequiredSpeechTurn(p)) {
+      if (/\b(many people|most people|it'?s normal|that'?s common)\b/i.test(p.say))
+        flags.push('normalisation');
 
-    if (/\b(you should|have you tried|i'?d suggest|why don'?t you)\b/i.test(p.say))
-      flags.push('advice');
+      if (/\b(you should|have you tried|i'?d suggest|why don'?t you)\b/i.test(p.say))
+        flags.push('advice');
 
-    if (/\bi (feel|understand|hear you|care|am here)\b/i.test(p.say))
-      flags.push('claimed_feeling_or_presence');
+      if (/\bi (feel|understand|hear you|care|am here)\b/i.test(p.say))
+        flags.push('claimed_feeling_or_presence');
+    }
   }
 
   if (p.mode === 'ANCHORED' && p.act && ['A5', 'A7', 'A9', 'A14', 'A15', 'A16', 'A17', 'A19'].includes(p.act))
