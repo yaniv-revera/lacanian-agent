@@ -16,7 +16,13 @@ import {
 import { requireUser } from './auth.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { parseTurn } from '../agent/parse.js';
-import { auditTurn, evaluateEnd, isChallengeAct, shouldLock } from '../agent/guards.js';
+import {
+  auditTurn,
+  consecutiveMinimalActs,
+  evaluateEnd,
+  isChallengeAct,
+  shouldLock,
+} from '../agent/guards.js';
 import { recordAnalystNote, updateLedgerFromUser } from '../agent/ledger.js';
 import { getProvider, type ChatMessage } from '../llm/index.js';
 
@@ -101,6 +107,7 @@ sessionRouter.post('/say', async (req, res) => {
     turnIndex: nextIdx,
     gateLatched: !!s.gate_latched,
     challengeActsLast5: acts.filter(isChallengeAct).length,
+    consecutiveMinimalActs: consecutiveMinimalActs(acts),
     endPermitted,
   });
 

@@ -20,6 +20,7 @@ export interface PromptVars {
   turnIndex: number;
   gateLatched: boolean;
   challengeActsLast5: number;
+  consecutiveMinimalActs: number;
   endPermitted: boolean;
 }
 
@@ -76,6 +77,7 @@ export function buildSystemPrompt(v: PromptVars): { stable: string; volatile: st
     .replace('{{TURN_INDEX}}', String(v.turnIndex))
     .replace('{{GATE_LATCHED}}', v.gateLatched ? 'true' : 'false')
     .replace('{{CHALLENGE_ACTS_LAST_5}}', String(v.challengeActsLast5))
+    .replace('{{CONSECUTIVE_MINIMAL_ACTS}}', String(v.consecutiveMinimalActs))
     .replace(
       '{{END_PERMITTED}}',
       v.endPermitted ? 'yes' : 'no — do not emit <end/>, it will be refused',

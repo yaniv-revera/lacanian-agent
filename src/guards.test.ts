@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { config } from './config.js';
-import { evaluateEnd, shouldLock, auditTurn } from './agent/guards.js';
+import { evaluateEnd, shouldLock, auditTurn, consecutiveMinimalActs } from './agent/guards.js';
 import { parseTurn } from './agent/parse.js';
 import type { ParsedTurn } from './types.js';
 
@@ -226,6 +226,33 @@ t('non-exempt acts are still flagged for advice', () => {
     recentActs: [], mode: 'ANALYTIC', turnCount: 5,
   });
   assert.ok(f.includes('advice'));
+});
+
+t('three consecutive A1 is flagged (not four)', () => {
+  const f = auditTurn(pt({ act: 'A1', say: 'Go on.' }), {
+    recentActs: ['A1', 'A1', 'A3'], mode: 'ANALYTIC', turnCount: 5,
+  });
+  assert.ok(f.includes('three_consecutive_A1'));
+});
+
+t('two consecutive A1 is not flagged', () => {
+  const f = auditTurn(pt({ act: 'A1', say: 'Go on.' }), {
+    recentActs: ['A1', 'A3'], mode: 'ANALYTIC', turnCount: 5,
+  });
+  assert.ok(!f.some((x) => x.includes('consecutive_A1')));
+});
+
+// --- consecutive minimal act counting (for prompt injection) ---
+
+t('consecutiveMinimalActs counts the leading run of A1', () => {
+  assert.equal(consecutiveMinimalActs([]), 0);
+  assert.equal(consecutiveMinimalActs(['A1']), 1);
+  assert.equal(consecutiveMinimalActs(['A1', 'A1']), 2);
+  assert.equal(consecutiveMinimalActs(['A1', 'A1', 'A3']), 2);
+});
+
+t('consecutiveMinimalActs stops at the first non-A1 act, most recent first', () => {
+  assert.equal(consecutiveMinimalActs(['A3', 'A1', 'A1']), 0);
 });
 
 console.error(`\n  ${passed} guard tests passed\n`);

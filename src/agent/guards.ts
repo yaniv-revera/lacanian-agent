@@ -75,6 +75,16 @@ export function isChallengeAct(act: string | null): boolean {
   return act !== null && CHALLENGE_ACTS.has(act);
 }
 
+/** Leading run of A1 in `acts` (most-recent-first). Used to inject the count into the prompt. */
+export function consecutiveMinimalActs(acts: string[]): number {
+  let n = 0;
+  for (const a of acts) {
+    if (a !== 'A1') break;
+    n++;
+  }
+  return n;
+}
+
 const REQUIRED_SPEECH_ACTS = new Set(['A13', 'A20']);
 
 /** A13, A20 and §4.6a corrections are required speech; the required-speech-shaped checks don't apply to them. */
@@ -104,9 +114,9 @@ export function auditTurn(p: ParsedTurn, ctx: AuditContext): string[] {
       (isChallengeAct(p.act) ? 1 : 0);
     if (challengeCount > 2) flags.push(`challenge_cap_exceeded:${challengeCount}_in_5`);
 
-    const lastThree = ctx.recentActs.slice(0, 3);
-    if (p.act === 'A1' && lastThree.length === 3 && lastThree.every((a) => a === 'A1'))
-      flags.push('four_consecutive_A1');
+    const lastTwo = ctx.recentActs.slice(0, 2);
+    if (p.act === 'A1' && lastTwo.length === 2 && lastTwo.every((a) => a === 'A1'))
+      flags.push('three_consecutive_A1');
 
     if (p.act === 'A2' && ctx.recentActs.slice(0, 2).every((a) => a === 'A2'))
       flags.push('three_consecutive_A2');
