@@ -13,6 +13,12 @@ import {
 } from '../db.js';
 import { checkAndRecordRateLimit, rateLimitedResponse } from './rateLimit.js';
 import { CONSENT_VERSION, CONSENT_TEXT_V1, hashConsentText } from '../agent/consent.js';
+import { isEmailAllowed } from '../agent/allowlist.js';
+
+/** Empty list means unrestricted (local dev); a non-empty list is enforced. */
+function isAllowed(email: string): boolean {
+  return config.allowedEmails.length === 0 || isEmailAllowed(email, config.allowedEmails);
+}
 
 export const authRouter = Router();
 
@@ -45,6 +51,12 @@ authRouter.post('/request', async (req, res) => {
     res.status(400).json({ error: 'invalid_email' });
     return;
   }
+  if (!isAllowed(email)) {
+    // Neutral: identical to a real success, before any DB write, so this
+    // response never reveals whether an email is on the pilot allowlist.
+    res.json({ ok: true, delivery: config.mailer });
+    return;
+  }
   const gate = checkAndRecordRateLimit(
     'login_request',
     `email:${email}`,
@@ -66,6 +78,11 @@ authRouter.post('/request', async (req, res) => {
 authRouter.post('/verify', (req, res) => {
   const email = String(req.body?.email ?? '').trim().toLowerCase();
   const code = String(req.body?.code ?? '').trim();
+  if (!isAllowed(email)) {
+    // Same shape as any other rejected code — no distinct oracle for allowlist status.
+    res.status(401).json({ error: 'bad_code' });
+    return;
+  }
   const gate = checkAndRecordRateLimit(
     'login_verify',
     `email:${email}`,

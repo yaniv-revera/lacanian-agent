@@ -53,6 +53,7 @@ import {
   CONSENT_TEXT_V1,
   type ConsentStatus,
 } from './agent/consent.js';
+import { isEmailAllowed } from './agent/allowlist.js';
 
 let passed = 0;
 const pending: Promise<void>[] = [];
@@ -1936,6 +1937,28 @@ t('needsConsent: consented at the current version', () => {
 t('needsConsent: consented at an older version — must re-consent', () => {
   const s: ConsentStatus = { consentedAt: 1_000_000, consentVersion: 'v0' };
   assert.equal(needsConsent(s, CONSENT_VERSION), true);
+});
+
+// --- pilot item 2: multi-entry allowlist ---
+
+t('isEmailAllowed: an empty allowlist admits nobody', () => {
+  assert.equal(isEmailAllowed('anyone@test.com', []), false);
+});
+
+t('isEmailAllowed: an exact match is allowed', () => {
+  assert.equal(isEmailAllowed('participant@test.com', ['participant@test.com']), true);
+});
+
+t('isEmailAllowed: comparison is case-insensitive', () => {
+  assert.equal(isEmailAllowed('Participant@Test.com', ['participant@test.com']), true);
+});
+
+t('isEmailAllowed: an email not on the list is rejected', () => {
+  assert.equal(isEmailAllowed('outsider@test.com', ['participant@test.com']), false);
+});
+
+t('isEmailAllowed: whitespace around list entries does not defeat matching', () => {
+  assert.equal(isEmailAllowed('participant@test.com', [' participant@test.com ']), true);
 });
 
 await Promise.all(pending);

@@ -1,7 +1,7 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { assertProviderConfigured, config } from './config.js';
+import { assertProductionSafety, assertProviderConfigured, config } from './config.js';
 import { authRouter } from './routes/auth.js';
 import { sessionRouter } from './routes/session.js';
 import './db.js';
@@ -9,6 +9,7 @@ import './db.js';
 const here = dirname(fileURLToPath(import.meta.url));
 
 assertProviderConfigured();
+assertProductionSafety();
 
 const app = express();
 // fly.io terminates TLS at its edge and proxies over a single trusted hop, so

@@ -10,6 +10,7 @@ function num(key: string, fallback: number): number {
 export const config = {
   port: num('PORT', 3000),
   dbPath: process.env.DB_PATH ?? './data/app.db',
+  isProduction: (process.env.NODE_ENV ?? '') === 'production',
 
   provider: (process.env.LLM_PROVIDER ?? 'anthropic') as 'anthropic' | 'openai' | 'mock',
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? '',
@@ -61,6 +62,14 @@ export const config = {
   turnSubmitWindowMinutes: num('TURN_SUBMIT_WINDOW_MINUTES', 5),
   turnSubmitMaxPerUser: num('TURN_SUBMIT_MAX_PER_USER', 30),
   turnSubmitMaxPerIp: num('TURN_SUBMIT_MAX_PER_IP', 60),
+
+  // Pilot item 2: a closed list of known participants. Empty means
+  // unrestricted — fine for local dev, refused outright in production by
+  // assertProductionSafety() below.
+  allowedEmails: (process.env.ALLOWED_EMAILS ?? '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
 };
 
 export function assertProviderConfigured(): void {
@@ -70,5 +79,20 @@ export function assertProviderConfigured(): void {
   }
   if (config.provider === 'openai' && !config.openaiKey) {
     throw new Error('LLM_PROVIDER=openai but OPENAI_API_KEY is empty. See .env.example');
+  }
+}
+
+/**
+ * Fail-closed checks that only apply once NODE_ENV=production — a local
+ * dev/mock run is allowed to be permissive, but this pilot is not open to
+ * the public, and the server must refuse to even start if a production
+ * deploy would otherwise be.
+ */
+export function assertProductionSafety(): void {
+  if (!config.isProduction) return;
+  if (config.allowedEmails.length === 0) {
+    throw new Error(
+      'NODE_ENV=production but ALLOWED_EMAILS is empty. Refusing to start open to the public — set ALLOWED_EMAILS.',
+    );
   }
 }
