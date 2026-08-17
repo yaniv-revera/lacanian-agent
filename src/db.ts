@@ -210,6 +210,33 @@ export function recordRateLimitEvent(scope: string, key: string): void {
   db.prepare('DELETE FROM rate_limit_events WHERE created_at < ?').run(now() - 24 * 60 * 60 * 1000);
 }
 
+/**
+ * §ב4: a hard delete, not a flag. Removes the user row (which carries
+ * ledger_json — there is no separate ledger table), every auth token,
+ * every session and its turns, and any lockout — the exact list the
+ * account-deletion promise in §7B of the system prompt covers. Wrapped in
+ * a transaction so a mid-delete failure can't leave the account half gone.
+ */
+export function deleteUser(userId: number): void {
+  db.exec('BEGIN');
+  try {
+    const sessionRows = db.prepare('SELECT id FROM sessions WHERE user_id = ?').all(userId) as {
+      id: number;
+    }[];
+    for (const s of sessionRows) {
+      db.prepare('DELETE FROM turns WHERE session_id = ?').run(Number(s.id));
+    }
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM auth_tokens WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM lockouts WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 // ---------- lockout ----------
 
 export function lockoutUntil(userId: number): number | null {

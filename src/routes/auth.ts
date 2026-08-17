@@ -5,6 +5,7 @@ import {
   consumeLoginCode,
   createToken,
   deleteToken,
+  deleteUser,
   storeLoginCode,
   upsertUser,
   userIdForToken,
@@ -107,3 +108,20 @@ export function requireUser(req: { headers: Record<string, unknown> }): number |
   if (!token) return null;
   return userIdForToken(token);
 }
+
+/**
+ * §ב4: a hard delete, in the same request that authenticates it — no
+ * confirmation step or grace period, because §7B tells the analysand this
+ * is immediate and irreversible. The token that authorized the call is
+ * deleted along with everything else (it belongs to auth_tokens, which
+ * deleteUser already clears), so there is nothing left to separately log out.
+ */
+authRouter.delete('/account', (req, res) => {
+  const uid = requireUser(req);
+  if (!uid) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  deleteUser(uid);
+  res.json({ ok: true });
+});
