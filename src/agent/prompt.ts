@@ -25,6 +25,8 @@ export interface PromptVars {
   a16Cap: number;
   /** Terms currently off-limits in any form — see ledger.blockedSignifiers. */
   blockedSignifiers: string[];
+  /** Canonical minimal forms already used this session — see guards.MINIMAL_FORMS. */
+  usedMinimalForms: string[];
   assentCountLast5: number;
   endPermitted: boolean;
 }
@@ -64,6 +66,10 @@ function renderBlockedSignifiers(terms: string[]): string {
   return terms.length ? terms.join(', ') : 'none';
 }
 
+function renderUsedMinimalForms(forms: string[]): string {
+  return forms.length ? forms.join(', ') : 'none yet';
+}
+
 /** Empty unless the 3-of-5 threshold is met — this is a live warning, not a standing counter. */
 function renderAssentWarning(assentCountLast5: number): string {
   if (assentCountLast5 < 3) return '';
@@ -100,6 +106,7 @@ export function buildSystemPrompt(v: PromptVars): { stable: string; volatile: st
     .replace('{{A16_COUNT}}', String(v.a16CountThisSession))
     .replace('{{A16_CAP}}', String(v.a16Cap))
     .replace('{{ECHOED_SIGNIFIERS}}', renderBlockedSignifiers(v.blockedSignifiers))
+    .replace('{{USED_MINIMAL_FORMS}}', renderUsedMinimalForms(v.usedMinimalForms))
     .replace('{{ASSENT_WARNING}}', renderAssentWarning(v.assentCountLast5))
     .replace(
       '{{END_PERMITTED}}',

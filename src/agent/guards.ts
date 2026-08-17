@@ -4,6 +4,30 @@ import { STOP } from './ledger.js';
 import type { EndDecision, ParsedTurn } from '../types.js';
 
 /**
+ * The closed set of canned minimal forms, in the order the prompt lists them.
+ * "One of his own words" is not in this set — it is open-ended and cannot be
+ * deterministically tracked or substituted without interpreting content.
+ */
+export const MINIMAL_FORMS = ['Go on.', 'Say more.', 'Hm.'];
+
+function normalizeForComparison(text: string): string {
+  return text.trim().replace(/[.!?,;:׃…]+$/g, '').trim().toLowerCase();
+}
+
+const NORMALIZED_MINIMAL_FORMS = MINIMAL_FORMS.map(normalizeForComparison);
+
+/** The canonical form `say` matches, if any — null means it's his own word, not tracked. */
+export function matchMinimalForm(say: string): string | null {
+  const idx = NORMALIZED_MINIMAL_FORMS.indexOf(normalizeForComparison(say));
+  return idx === -1 ? null : MINIMAL_FORMS[idx];
+}
+
+/** First canonical form not in `used`, in repertoire order — null once exhausted. */
+export function nextUnusedMinimalForm(used: string[]): string | null {
+  return MINIMAL_FORMS.find((f) => !used.includes(f)) ?? null;
+}
+
+/**
  * Server-side enforcement of the frame.
  *
  * The model is told the rules, but the rules are not left to the model.
@@ -128,7 +152,10 @@ function maxTokenOverlap(say: string, recentUtterances: string[]): number {
 }
 
 export type DraftRetryReason =
+  | { kind: 'reports_repetition' }
+  | { kind: 'frame_complaint' }
   | { kind: 'run_limit'; act: string }
+  | { kind: 'minimal_form_reused'; form: string }
   | { kind: 'a16_cap'; limit: number }
   | { kind: 'a16_window' }
   | { kind: 'echoed_signifier'; term: string }
@@ -147,12 +174,20 @@ export interface DraftRetryContext {
   blockedSignifiers: string[];
   /** Last three analyst utterances, in any order — only the max overlap is used. */
   recentAnalystUtterances: string[];
+  /** Canonical minimal forms already used this session (see MINIMAL_FORMS). */
+  usedMinimalForms: string[];
+  /** Does the analysand's current turn complain about the frame or the relation (§5A.1)? */
+  userFrameComplaint: boolean;
+  /** Does the analysand's current turn report that he is repeating himself? */
+  userReportsRepetition: boolean;
 }
 
 /**
- * Everything that earns a draft exactly one regeneration: a third consecutive
- * identical act, the A16 session cap or two-turn window, any-form return of a
- * currently-blocked signifier, or a near-duplicate of a recent utterance.
+ * Everything that earns a draft exactly one regeneration: a hard block on a
+ * minimal act when the analysand reports repetition or complains about the
+ * frame, a third consecutive identical act, a reused minimal form, the A16
+ * session cap or two-turn window, any-form return of a currently-blocked
+ * signifier, or a near-duplicate of a recent utterance.
  *
  * Required speech, GATE and ANCHORED turns are never subject to any of this —
  * safety and required speech are never regenerated for stylistic reasons.
@@ -162,7 +197,15 @@ export function decideDraftRetry(p: ParsedTurn, ctx: DraftRetryContext): DraftRe
   if (isRequiredSpeechTurn(p)) return null;
   if (p.act === null) return null;
 
+  if (p.act === 'A1' && ctx.userReportsRepetition) return { kind: 'reports_repetition' };
+  if (p.act === 'A1' && ctx.userFrameComplaint) return { kind: 'frame_complaint' };
+
   if (wouldBeThirdConsecutive(p.act, ctx.recentActs)) return { kind: 'run_limit', act: p.act };
+
+  if (p.act === 'A1') {
+    const form = matchMinimalForm(p.say);
+    if (form && ctx.usedMinimalForms.includes(form)) return { kind: 'minimal_form_reused', form };
+  }
 
   if (p.act === 'A16') {
     if (ctx.a16CountThisSession >= config.maxA16PerSession)
@@ -189,14 +232,26 @@ export interface DraftRetryResult {
   retryFailed: boolean;
   /** The reason that triggered the retry, or — on failure — whichever reason still applies. */
   reason: DraftRetryReason | null;
+  /**
+   * Set only when the server itself swapped a reused minimal form for an
+   * unused one from MINIMAL_FORMS — that substitution requires no
+   * interpretation, so it isn't a "failure" the way other pass-throughs are.
+   */
+  substituted: { from: string; to: string } | null;
 }
 
 /**
  * Discards a draft that trips `decideDraftRetry` and asks the provider for
- * exactly one alternative, naming the specific reason as forbidden. If the
- * retry still violates something, it is accepted as-is — the user is never
- * blocked and never sees an error; the failure is reported via `retryFailed`
- * for the caller to log.
+ * exactly one alternative, naming the specific reason as forbidden.
+ *
+ * If the retry still repeats an already-used minimal form, the server
+ * substitutes the next unused one from MINIMAL_FORMS deterministically —
+ * minimal acts are contentless punctuation, so swapping within that closed
+ * set does not interpret anything. Any other continued violation (including
+ * a minimal act still forbidden by a hard block) is accepted as-is: the user
+ * is never blocked and never sees an error, and the failure is reported via
+ * `retryFailed` for the caller to log. Substantive speech is never rewritten
+ * by the server.
  */
 export async function withDraftRetry(
   parsed: ParsedTurn,
@@ -205,11 +260,20 @@ export async function withDraftRetry(
   retry: (reason: DraftRetryReason) => Promise<string>,
 ): Promise<DraftRetryResult> {
   const reason = decideDraftRetry(parsed, ctx);
-  if (!reason) return { parsed, raw, retried: false, retryFailed: false, reason: null };
+  if (!reason) return { parsed, raw, retried: false, retryFailed: false, reason: null, substituted: null };
 
   const retryRaw = await retry(reason);
-  const retryParsed = parseTurn(retryRaw);
+  let retryParsed = parseTurn(retryRaw);
   const stillViolates = decideDraftRetry(retryParsed, ctx);
+
+  if (stillViolates?.kind === 'minimal_form_reused') {
+    const next = nextUnusedMinimalForm(ctx.usedMinimalForms);
+    if (next) {
+      const substituted = { from: stillViolates.form, to: next };
+      retryParsed = { ...retryParsed, say: next };
+      return { parsed: retryParsed, raw: retryRaw, retried: true, retryFailed: false, reason: stillViolates, substituted };
+    }
+  }
 
   return {
     parsed: retryParsed,
@@ -217,13 +281,20 @@ export async function withDraftRetry(
     retried: true,
     retryFailed: stillViolates !== null,
     reason: stillViolates ?? reason,
+    substituted: null,
   };
 }
 
 export function retryOverrideMessage(reason: DraftRetryReason): string {
   switch (reason.kind) {
+    case 'reports_repetition':
+      return `\n\nSERVER OVERRIDE: the analysand is reporting that you did not hear him — he is repeating himself. A minimal act is forbidden this turn. Return what he actually said.`;
+    case 'frame_complaint':
+      return `\n\nSERVER OVERRIDE: the analysand is complaining about the frame or the relation, not his material. This is required speech (§5A.1) — punctuate the transference (A8) or state the lack (A20). A minimal act is forbidden this turn.`;
     case 'run_limit':
       return `\n\nSERVER OVERRIDE: ${reason.act} would be the third consecutive identical act this turn. ${reason.act} is forbidden — choose a different act, or A20.`;
+    case 'minimal_form_reused':
+      return `\n\nSERVER OVERRIDE: "${reason.form}" has already been used as a minimal act this session. Do not reuse it — choose a different minimal form, one of his own words, or a different act.`;
     case 'a16_cap':
       return `\n\nSERVER OVERRIDE: A16 has already been used ${reason.limit} times this session, the session cap. A16 is forbidden this turn — choose a different act.`;
     case 'a16_window':
@@ -237,8 +308,14 @@ export function retryOverrideMessage(reason: DraftRetryReason): string {
 
 export function retryFailureFlag(reason: DraftRetryReason): string {
   switch (reason.kind) {
+    case 'reports_repetition':
+      return 'reports_repetition_retry_failed';
+    case 'frame_complaint':
+      return 'frame_complaint_retry_failed';
     case 'run_limit':
       return `run_limit_retry_failed:${reason.act}`;
+    case 'minimal_form_reused':
+      return `minimal_form_reused_retry_failed:${reason.form}`;
     case 'a16_cap':
       return 'a16_cap_retry_failed';
     case 'a16_window':

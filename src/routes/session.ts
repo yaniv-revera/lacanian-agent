@@ -22,6 +22,7 @@ import {
   consecutiveMinimalActs,
   evaluateEnd,
   isChallengeAct,
+  matchMinimalForm,
   retryFailureFlag,
   retryOverrideMessage,
   shouldLock,
@@ -30,8 +31,10 @@ import {
 import {
   assentRunStats,
   blockedSignifiers,
+  isFrameComplaint,
   recordAnalystNote,
   recordEchoedSignifier,
+  reportsRepetition,
   updateLedgerFromUser,
 } from '../agent/ledger.js';
 import { getProvider, type ChatMessage } from '../llm/index.js';
@@ -128,6 +131,17 @@ sessionRouter.post('/say', async (req, res) => {
     userTurns.map((t) => ({ idx: t.idx, text: t.text })),
   );
 
+  const usedMinimalForms = [
+    ...new Set(
+      allTurns
+        .filter((t) => t.role === 'analyst' && t.act === 'A1')
+        .map((t) => matchMinimalForm(t.text))
+        .filter((f): f is string => f !== null),
+    ),
+  ];
+  const userFrameComplaint = isFrameComplaint(text);
+  const userReportsRepetition = reportsRepetition(text);
+
   const system = buildSystemPrompt({
     ledger: { ...afterUser, session_count: s.session_index },
     sessionIndex: s.session_index,
@@ -138,6 +152,7 @@ sessionRouter.post('/say', async (req, res) => {
     a16CountThisSession,
     a16Cap: config.maxA16PerSession,
     blockedSignifiers: blocked,
+    usedMinimalForms,
     assentCountLast5,
     endPermitted,
   });
@@ -160,10 +175,11 @@ sessionRouter.post('/say', async (req, res) => {
   let parsed = parseTurn(raw);
   if (!parsed.say) parsed.say = 'Go on.';
 
-  // 3b. Draft-retry enforcement: a run limit, the A16 cap/window, a blocked
-  // signifier returned in any form, or a near-duplicate utterance each get
-  // exactly one regeneration. Safety and required speech are never
-  // regenerated for this.
+  // 3b. Draft-retry enforcement: a hard block on a minimal act when the
+  // analysand reports repetition or complains about the frame, a run limit, a
+  // reused minimal form, the A16 cap/window, a blocked signifier returned in
+  // any form, or a near-duplicate utterance each get exactly one
+  // regeneration. Safety and required speech are never regenerated for this.
   let retryFailFlag: string | null = null;
   try {
     const retryResult = await withDraftRetry(
@@ -174,6 +190,9 @@ sessionRouter.post('/say', async (req, res) => {
         a16CountThisSession,
         blockedSignifiers: blocked,
         recentAnalystUtterances,
+        usedMinimalForms,
+        userFrameComplaint,
+        userReportsRepetition,
       },
       async (reason) => {
         const retrySystem = {
@@ -186,7 +205,11 @@ sessionRouter.post('/say', async (req, res) => {
     if (retryResult.retried) {
       parsed = retryResult.parsed;
       if (!parsed.say) parsed.say = 'Go on.';
-      if (retryResult.retryFailed && retryResult.reason) retryFailFlag = retryFailureFlag(retryResult.reason);
+      if (retryResult.substituted) {
+        retryFailFlag = `minimal_form_substituted:${retryResult.substituted.from}->${retryResult.substituted.to}`;
+      } else if (retryResult.retryFailed && retryResult.reason) {
+        retryFailFlag = retryFailureFlag(retryResult.reason);
+      }
     }
   } catch (err) {
     console.error('[llm] draft retry failed, using original draft', err);

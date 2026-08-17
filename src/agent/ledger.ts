@@ -318,3 +318,59 @@ export function assentRunStats(userTexts: string[]): AssentRunStats {
   const last5 = flags.slice(-5);
   return { last5, count: last5.filter(Boolean).length };
 }
+
+/**
+ * Complaint about the frame or the relation, not about his material — §5A.1.
+ * Required speech; never answered with a minimal act. Checked against the
+ * analysand's current turn only.
+ */
+const FRAME_COMPLAINT_EN = [
+  /\bwhy do you keep saying that\b/i,
+  /\bwhy do you keep (?:doing|repeating) that\b/i,
+  /\bthis is frustrating\b/i,
+  /\bthis (?:isn'?t|is not) helping\b/i,
+  /\byou'?re not helping\b/i,
+  /\byou (?:never|don'?t) answer\b/i,
+  /\bwhat do you want from me\b/i,
+  /\byou keep repeating (?:yourself|that)\b/i,
+];
+
+const FRAME_COMPLAINT_HE = [
+  'אני אומר שוב',
+  'אמרתי כבר',
+  'לא הבנת',
+  'אתה לא עונה',
+  'זה מתסכל',
+  'מתסכל אותי',
+  'אני לא יודע איך להמשיך',
+  'מה אתה רוצה ממני',
+  'למה אתה חוזר',
+  'אתה חוזר על עצמך',
+  'זה לא עוזר',
+];
+
+export function isFrameComplaint(text: string): boolean {
+  if (FRAME_COMPLAINT_EN.some((p) => p.test(text))) return true;
+  const lower = text.toLowerCase();
+  return FRAME_COMPLAINT_HE.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * The analysand reporting that he is repeating himself — a report of a
+ * failure of hearing, distinct from a general complaint about the frame
+ * (§5A.1) even though the two categories share some trigger phrases.
+ */
+const REPETITION_EN = [
+  /\bi already said\b/i,
+  /\bas i said\b/i,
+  /\bi'?m saying (?:this |that )?again\b/i,
+  /\bi keep saying\b/i,
+];
+
+const REPETITION_HE = ['אני אומר שוב', 'אמרתי כבר', 'כמו שאמרתי', 'שוב אני אומר'];
+
+export function reportsRepetition(text: string): boolean {
+  if (REPETITION_EN.some((p) => p.test(text))) return true;
+  const lower = text.toLowerCase();
+  return REPETITION_HE.some((phrase) => lower.includes(phrase));
+}

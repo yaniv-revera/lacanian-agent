@@ -9,6 +9,9 @@ import {
   withDraftRetry,
   retryOverrideMessage,
   retryFailureFlag,
+  matchMinimalForm,
+  nextUnusedMinimalForm,
+  MINIMAL_FORMS,
   type DraftRetryContext,
 } from './agent/guards.js';
 import { parseTurn } from './agent/parse.js';
@@ -18,6 +21,8 @@ import {
   blockedSignifiers,
   isAssentReply,
   assentRunStats,
+  isFrameComplaint,
+  reportsRepetition,
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
@@ -315,6 +320,9 @@ const RETRY_CTX_BASE: DraftRetryContext = {
   a16CountThisSession: 0,
   blockedSignifiers: [],
   recentAnalystUtterances: [],
+  usedMinimalForms: [],
+  userFrameComplaint: false,
+  userReportsRepetition: false,
 };
 
 t('decideDraftRetry is null on a short window', () => {
@@ -651,6 +659,219 @@ t('auditTurn does not add assent_instead_of_association below the threshold', ()
     recentActs: [], mode: 'ANALYTIC', turnCount: 10, assentCountLast5: 2,
   });
   assert.ok(!f.some((x) => x.startsWith('assent_instead_of_association')));
+});
+
+// --- minimal-form deduplication and substitution (Finding 1) ---
+
+t('MINIMAL_FORMS is the closed canonical set, in prompt order', () => {
+  assert.deepEqual(MINIMAL_FORMS, ['Go on.', 'Say more.', 'Hm.']);
+});
+
+t('matchMinimalForm recognises a canonical form despite case and punctuation drift', () => {
+  assert.equal(matchMinimalForm('Hm.'), 'Hm.');
+  assert.equal(matchMinimalForm('hm'), 'Hm.');
+  assert.equal(matchMinimalForm('Go on'), 'Go on.');
+  assert.equal(matchMinimalForm('  SAY MORE.  '), 'Say more.');
+});
+
+t('matchMinimalForm returns null for his own word, not a canonical form', () => {
+  assert.equal(matchMinimalForm('מותר'), null);
+  assert.equal(matchMinimalForm('That sounds hard.'), null);
+});
+
+t('nextUnusedMinimalForm returns the first unused canonical form in order', () => {
+  assert.equal(nextUnusedMinimalForm([]), 'Go on.');
+  assert.equal(nextUnusedMinimalForm(['Go on.']), 'Say more.');
+  assert.equal(nextUnusedMinimalForm(['Go on.', 'Say more.']), 'Hm.');
+});
+
+t('nextUnusedMinimalForm returns null once the repertoire is exhausted', () => {
+  assert.equal(nextUnusedMinimalForm(['Go on.', 'Say more.', 'Hm.']), null);
+});
+
+t('decideDraftRetry fires minimal_form_reused for a repeated canonical form', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', say: 'Hm.' }), {
+    ...RETRY_CTX_BASE,
+    usedMinimalForms: ['Hm.'],
+  });
+  assert.deepEqual(r, { kind: 'minimal_form_reused', form: 'Hm.' });
+});
+
+t('decideDraftRetry allows a fresh canonical form', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', say: 'Say more.' }), {
+    ...RETRY_CTX_BASE,
+    usedMinimalForms: ['Hm.'],
+  });
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry allows his own word even if every canonical form was already used', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', say: 'מותר' }), {
+    ...RETRY_CTX_BASE,
+    usedMinimalForms: ['Hm.', 'Go on.', 'Say more.'],
+  });
+  assert.equal(r, null);
+});
+
+at(
+  'withDraftRetry substitutes deterministically when the retry repeats an already-used minimal ' +
+    'form (Finding 1: turn 11/12 "Hm." verbatim)',
+  async () => {
+    let calls = 0;
+    const result = await withDraftRetry(
+      pt({ act: 'A1', say: 'Hm.' }),
+      '<work>act: A1</work><say>Hm.</say>',
+      { ...RETRY_CTX_BASE, usedMinimalForms: ['Hm.'] },
+      async (reason) => {
+        calls++;
+        assert.deepEqual(reason, { kind: 'minimal_form_reused', form: 'Hm.' });
+        return '<work>act: A1</work><say>Hm.</say>'; // model repeats it anyway
+      },
+    );
+    assert.equal(calls, 1);
+    assert.equal(result.retried, true);
+    assert.equal(result.retryFailed, false);
+    assert.deepEqual(result.substituted, { from: 'Hm.', to: 'Go on.' });
+    assert.equal(result.parsed.act, 'A1');
+    assert.equal(result.parsed.say, 'Go on.');
+  },
+);
+
+at('withDraftRetry falls back to pass-through-and-log once the whole repertoire is exhausted', async () => {
+  const result = await withDraftRetry(
+    pt({ act: 'A1', say: 'Hm.' }),
+    '<work>act: A1</work><say>Hm.</say>',
+    { ...RETRY_CTX_BASE, usedMinimalForms: ['Go on.', 'Say more.', 'Hm.'] },
+    async () => '<work>act: A1</work><say>Hm.</say>',
+  );
+  assert.equal(result.retried, true);
+  assert.equal(result.retryFailed, true);
+  assert.equal(result.substituted, null);
+  assert.equal(retryFailureFlag(result.reason!), 'minimal_form_reused_retry_failed:Hm.');
+});
+
+at('withDraftRetry does not substitute when the retry resolves cleanly', async () => {
+  const result = await withDraftRetry(
+    pt({ act: 'A1', say: 'Hm.' }),
+    '<work>act: A1</work><say>Hm.</say>',
+    { ...RETRY_CTX_BASE, usedMinimalForms: ['Hm.'] },
+    async () => '<work>act: A1</work><say>Tell me about the word "leaving."</say>',
+  );
+  assert.equal(result.retryFailed, false);
+  assert.equal(result.substituted, null);
+});
+
+// --- frame complaint and repetition detectors (Findings 2 and 3) ---
+
+t('isFrameComplaint recognises the English examples', () => {
+  assert.equal(isFrameComplaint('Why do you keep saying that?'), true);
+  assert.equal(isFrameComplaint('This is frustrating.'), true);
+  assert.equal(isFrameComplaint("You're not helping."), true);
+});
+
+t('isFrameComplaint recognises the Hebrew examples', () => {
+  assert.equal(isFrameComplaint('אני לא יודע איך להמשיך'), true);
+  assert.equal(isFrameComplaint('אתה לא עונה לי כלום'), true);
+  assert.equal(isFrameComplaint('זה מתסכל אותי'), true);
+  assert.equal(isFrameComplaint('למה אתה חוזר על אותו דבר'), true);
+});
+
+t('isFrameComplaint is false for ordinary material', () => {
+  assert.equal(isFrameComplaint('אמא שלי התקשרה אתמול בערב'), false);
+  assert.equal(isFrameComplaint('My mother called last night.'), false);
+});
+
+t('reportsRepetition recognises the English examples', () => {
+  assert.equal(reportsRepetition('I already said that.'), true);
+  assert.equal(reportsRepetition('As I said, it was not my fault.'), true);
+  assert.equal(reportsRepetition("I'm saying this again."), true);
+  assert.equal(reportsRepetition('I keep saying this and nothing changes.'), true);
+});
+
+t('reportsRepetition recognises the Hebrew examples', () => {
+  assert.equal(reportsRepetition('אני אומר שוב שזה לא היה קל'), true);
+  assert.equal(reportsRepetition('אמרתי כבר שאני לא רוצה'), true);
+  assert.equal(reportsRepetition('כמו שאמרתי, זה לא משנה'), true);
+});
+
+t('reportsRepetition is false for ordinary material', () => {
+  assert.equal(reportsRepetition('אמא שלי התקשרה אתמול בערב'), false);
+  assert.equal(reportsRepetition('Tell me what happened next.'), false);
+});
+
+t('decideDraftRetry hard-blocks a minimal act on a frame complaint', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', say: 'Go on.' }), {
+    ...RETRY_CTX_BASE,
+    userFrameComplaint: true,
+  });
+  assert.deepEqual(r, { kind: 'frame_complaint' });
+});
+
+t('decideDraftRetry does not block a non-minimal act on a frame complaint', () => {
+  const r = decideDraftRetry(pt({ act: 'A8', say: "You're telling that to me." }), {
+    ...RETRY_CTX_BASE,
+    userFrameComplaint: true,
+  });
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry hard-blocks a minimal act when the analysand reports repetition', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', say: 'Hm.' }), {
+    ...RETRY_CTX_BASE,
+    userReportsRepetition: true,
+  });
+  assert.deepEqual(r, { kind: 'reports_repetition' });
+});
+
+t('reports_repetition takes priority over frame_complaint when both fire — they stay distinct', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', say: 'Go on.' }), {
+    ...RETRY_CTX_BASE,
+    userFrameComplaint: true,
+    userReportsRepetition: true,
+  });
+  assert.deepEqual(r, { kind: 'reports_repetition' });
+});
+
+t('required speech, GATE and ANCHORED still bypass the frame-complaint and repetition blocks', () => {
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A20' }), { ...RETRY_CTX_BASE, userReportsRepetition: true }),
+    null,
+  );
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A1', mode: 'GATE' }), { ...RETRY_CTX_BASE, userFrameComplaint: true }),
+    null,
+  );
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A1', mode: 'ANCHORED' }), {
+      ...RETRY_CTX_BASE,
+      userReportsRepetition: true,
+    }),
+    null,
+  );
+});
+
+at(
+  'withDraftRetry does not form-substitute a reports_repetition failure — swapping the minimal ' +
+    'form is not a fix here',
+  async () => {
+    const result = await withDraftRetry(
+      pt({ act: 'A1', say: 'Hm.' }),
+      '<work>act: A1</work><say>Hm.</say>',
+      { ...RETRY_CTX_BASE, userReportsRepetition: true },
+      async () => '<work>act: A1</work><say>Go on.</say>', // still minimal, just an unused form
+    );
+    assert.equal(result.retryFailed, true);
+    assert.equal(result.substituted, null);
+    assert.equal(retryFailureFlag(result.reason!), 'reports_repetition_retry_failed');
+  },
+);
+
+t('retryOverrideMessage and retryFailureFlag cover the new reason kinds', () => {
+  assert.ok(retryOverrideMessage({ kind: 'minimal_form_reused', form: 'Hm.' }).includes('Hm.'));
+  assert.ok(retryOverrideMessage({ kind: 'frame_complaint' }).toLowerCase().includes('minimal'));
+  assert.ok(retryOverrideMessage({ kind: 'reports_repetition' }).toLowerCase().includes('minimal'));
+  assert.equal(retryFailureFlag({ kind: 'frame_complaint' }), 'frame_complaint_retry_failed');
+  assert.equal(retryFailureFlag({ kind: 'reports_repetition' }), 'reports_repetition_retry_failed');
 });
 
 await Promise.all(pending);
