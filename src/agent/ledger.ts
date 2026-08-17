@@ -7,15 +7,28 @@ import type { EchoedSignifier, Ledger } from '../types.js';
  * be silently substituted.
  */
 
-export const STOP = new Set(
-  `a an the and or but if then than that this these those i me my mine you your yours he him his she her
+/**
+ * Function words filtered from signifier tracking. Hebrew forms cover the
+ * same closed categories as the English list (pronouns, demonstratives,
+ * copula/existential, modal auxiliaries, prepositions, conjunctions,
+ * question words, quantifiers) but are standalone words only — Hebrew
+ * attaches ו/ה/ב/כ/ל/מ/ש directly to the following word with no space
+ * (e.g. "שזה", "וגם"), and a fused prefix+word token will not match either
+ * list. That needs a morphological stemmer, not a word list; not attempted
+ * here.
+ */
+export const STOP = new Set([
+  ...`a an the and or but if then than that this these those i me my mine you your yours he him his she her
    it its we us our they them their am is are was were be been being do does did done have has had will
    would can could should shall may might must of in on at to for with from by about as so just really
    very not no yes what when where who whom how why there here get got go going went know think feel
-   like said say says because into out up down over under again more most some any all one two`.split(
-    /\s+/,
-  ),
-);
+   like said say says because into out up down over under again more most some any all one two`.split(/\s+/),
+  ...`אני אתה את הוא היא אנחנו אתם אתן הם הן אותי אותך אותו אותה אותנו אתכם אתכן אותם אותן לי לך לו לה לנו
+   לכם לכן להם להן זה זאת זו אלה אלו היה היתה היו להיות יש אין יכול יכולה יכולים יכולות צריך צריכה צריכים
+   צריכות עם אל על אצל בלי עד אחרי לפני מול ליד תחת מעל בין נגד כמו כי אם אבל או גם רק אז לא כן מה מי איפה
+   למה איך מתי כמה איזה איזו כל עוד כבר תמיד עדיין פעם הרבה מעט משהו מישהו כלום כאן שם עכשיו היום אתמול
+   מחר אחד אחת שני שתי`.split(/\s+/),
+]);
 
 const LAW_PATTERNS = [
   /\bi'?m (?:just )?(?:someone|somebody|a person) who\b/i,
@@ -79,7 +92,7 @@ export function updateLedgerFromUser(
   const sents = sentences(text);
 
   // --- signifiers ---
-  const words = text.toLowerCase().match(/[a-z']{3,}/g) ?? [];
+  const words = wordsOf(text);
   const seenThisTurn = new Set<string>();
   for (const w of words) {
     if (STOP.has(w) || seenThisTurn.has(w)) continue;
@@ -167,8 +180,10 @@ export function updateLedgerFromUser(
 
   const desupposition = DESUPPOSITION.some((p) => p.test(text));
 
-  // Keep the ledger bounded.
-  l.signifiers = l.signifiers.filter((s) => s.count > 1 || s.candidate_S1).slice(-400);
+  // Keep the ledger bounded by distinct-term count, not by pruning fresh
+  // entries: a signifier with count === 1 must survive to be found again on
+  // a later turn, or its count can never advance past 1 in the first place.
+  l.signifiers = l.signifiers.slice(-400);
   l.formations = l.formations.slice(-60);
   l.laws_stated = l.laws_stated.slice(-40);
   l.specific_negations = l.specific_negations.slice(-40);

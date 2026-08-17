@@ -23,6 +23,7 @@ import {
   assentRunStats,
   isFrameComplaint,
   reportsRepetition,
+  updateLedgerFromUser,
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
@@ -872,6 +873,53 @@ t('retryOverrideMessage and retryFailureFlag cover the new reason kinds', () => 
   assert.ok(retryOverrideMessage({ kind: 'reports_repetition' }).toLowerCase().includes('minimal'));
   assert.equal(retryFailureFlag({ kind: 'frame_complaint' }), 'frame_complaint_retry_failed');
   assert.equal(retryFailureFlag({ kind: 'reports_repetition' }), 'reports_repetition_retry_failed');
+});
+
+// --- Hebrew signifier extraction ---
+
+t('a repeated Hebrew content word is tracked and becomes a candidate master signifier', () => {
+  let ledger = emptyLedger();
+  const turns = [
+    'מותר לי לבכות?',
+    'אני חושב שזה מותר.',
+    'הוא אמר שזה מותר לי.',
+    'מותר, הכל מותר עכשיו.',
+  ];
+  turns.forEach((text, i) => {
+    ledger = updateLedgerFromUser(ledger, text, 1, i + 1).ledger;
+  });
+  const entry = ledger.signifiers.find((s) => s.term === 'מותר');
+  assert.ok(entry, 'מותר should be tracked as a signifier');
+  assert.ok(entry!.count >= 4, `expected count >= 4, got ${entry?.count}`);
+  assert.equal(entry!.candidate_S1, true);
+});
+
+t('common Hebrew function words are filtered as stopwords, even when repeated', () => {
+  let ledger = emptyLedger();
+  ledger = updateLedgerFromUser(ledger, 'אני חושב שזה מותר לי', 1, 1).ledger;
+  ledger = updateLedgerFromUser(ledger, 'אני חושב שזה מותר גם עכשיו', 1, 2).ledger;
+  const terms = ledger.signifiers.map((s) => s.term);
+  assert.ok(terms.includes('מותר'), 'מותר should survive as a repeated content word');
+  assert.ok(!terms.includes('אני'), 'אני (I) should be filtered as a stopword');
+  assert.ok(!terms.includes('זה'), 'זה (this) should be filtered as a stopword');
+});
+
+t('a two-letter Hebrew content word is not dropped by the length floor', () => {
+  let ledger = emptyLedger();
+  ledger = updateLedgerFromUser(ledger, 'אבא שלי כעס עליי.', 1, 1).ledger;
+  ledger = updateLedgerFromUser(ledger, 'אבא תמיד כועס עליי.', 1, 2).ledger;
+  const terms = ledger.signifiers.map((s) => s.term);
+  assert.ok(terms.includes('אבא'), '3-letter Hebrew word "אבא" (father) should be tracked');
+});
+
+t('English signifier extraction still works after the Hebrew fix (regression)', () => {
+  let ledger = emptyLedger();
+  ledger = updateLedgerFromUser(ledger, 'I keep thinking about the wedding.', 1, 1).ledger;
+  ledger = updateLedgerFromUser(ledger, 'The wedding is all I think about.', 1, 2).ledger;
+  const terms = ledger.signifiers.map((s) => s.term);
+  assert.ok(terms.includes('wedding'));
+  assert.ok(!terms.includes('the'));
+  assert.ok(!terms.includes('is'));
 });
 
 await Promise.all(pending);
