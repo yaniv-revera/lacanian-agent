@@ -12,6 +12,7 @@ import {
   matchMinimalForm,
   nextUnusedMinimalForm,
   MINIMAL_FORMS,
+  emptySayFallback,
   type DraftRetryContext,
 } from './agent/guards.js';
 import { parseTurn } from './agent/parse.js';
@@ -30,6 +31,8 @@ import {
   recordFormationNomination,
   recordNominations,
   isSessionOpeningTrigger,
+  isA14Excluded,
+  isA15Excluded,
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
@@ -333,6 +336,8 @@ const RETRY_CTX_BASE: DraftRetryContext = {
   usedMinimalForms: [],
   userFrameComplaint: false,
   userReportsRepetition: false,
+  userA14Excluded: false,
+  userA15Excluded: false,
 };
 
 t('decideDraftRetry is null on a short window', () => {
@@ -1163,6 +1168,190 @@ t('a caller that forgets the guard would leak "begins" — this is why session.t
   // must skip this call entirely rather than pass the sentinel through.
   const { ledger } = updateLedgerFromUser(emptyLedger(), '(begins)', 1, 1);
   assert.ok(ledger.signifiers.some((s) => s.term === 'begins'));
+});
+
+// --- Adversarial round 3, finding 1: mode-aware empty-say fallback ---
+
+t('emptySayFallback returns the analytic placeholder outside GATE', () => {
+  assert.equal(emptySayFallback('ANALYTIC', 'UNAVAILABLE'), 'Go on.');
+  assert.equal(emptySayFallback('ANCHORED', 'UNAVAILABLE'), 'Go on.');
+  assert.equal(emptySayFallback('OUT-OF-FRAME', 'UNAVAILABLE'), 'Go on.');
+});
+
+t('emptySayFallback never falls back to "Go on." in GATE, and states what it is', () => {
+  const msg = emptySayFallback('GATE', 'UNAVAILABLE');
+  assert.notEqual(msg, 'Go on.');
+  assert.ok(msg.toLowerCase().includes('machine'));
+  assert.ok(/emergency|crisis/i.test(msg));
+});
+
+t('emptySayFallback surfaces real crisis resources when configured, never inventing one', () => {
+  const msg = emptySayFallback('GATE', 'Israel: ERAN 1201 | Emergency 101.');
+  assert.ok(msg.includes('ERAN 1201'));
+});
+
+t('emptySayFallback still names emergency services when no resources are configured', () => {
+  const msg = emptySayFallback('GATE', 'UNAVAILABLE');
+  assert.ok(/emergency services|local crisis line|local emergency/i.test(msg));
+});
+
+// --- Adversarial round 3, finding 5: A16 hard-blocked on self-annihilation words ---
+
+t('decideDraftRetry hard-blocks A16 on a named self-annihilation word (English)', () => {
+  const r = decideDraftRetry(pt({ act: 'A16', say: 'Disappear.' }), { ...RETRY_CTX_BASE });
+  assert.deepEqual(r, { kind: 'a16_dangerous_word', word: 'disappear' });
+});
+
+t('decideDraftRetry hard-blocks A16 on a named self-annihilation word (Hebrew)', () => {
+  const r = decideDraftRetry(pt({ act: 'A16', say: 'להיעלם' }), { ...RETRY_CTX_BASE });
+  assert.equal(r?.kind, 'a16_dangerous_word');
+});
+
+t('decideDraftRetry catches the dangerous word even when glossed, not just bare', () => {
+  const r = decideDraftRetry(pt({ act: 'A16', say: 'I keep thinking I should just disappear.' }), {
+    ...RETRY_CTX_BASE,
+  });
+  assert.equal(r?.kind, 'a16_dangerous_word');
+});
+
+t('decideDraftRetry does not block A16 on an ordinary signifier', () => {
+  const r = decideDraftRetry(pt({ act: 'A16', say: 'Enough.' }), { ...RETRY_CTX_BASE });
+  assert.equal(r, null);
+});
+
+t('the dangerous-word check takes priority over the A16 cap and window', () => {
+  const capped = decideDraftRetry(pt({ act: 'A16', say: 'Empty.' }), {
+    ...RETRY_CTX_BASE,
+    a16CountThisSession: 99,
+  });
+  assert.equal(capped?.kind, 'a16_dangerous_word');
+
+  const windowed = decideDraftRetry(pt({ act: 'A16', say: 'Gone.' }), {
+    ...RETRY_CTX_BASE,
+    recentActs: ['A16', 'A3'],
+  });
+  assert.equal(windowed?.kind, 'a16_dangerous_word');
+});
+
+t('GATE and ANCHORED still bypass the A16 dangerous-word block', () => {
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A16', mode: 'GATE', say: 'disappear' }), { ...RETRY_CTX_BASE }),
+    null,
+  );
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A16', mode: 'ANCHORED', say: 'disappear' }), { ...RETRY_CTX_BASE }),
+    null,
+  );
+});
+
+t('retryOverrideMessage and retryFailureFlag cover a16_dangerous_word, and point to §8', () => {
+  const reason = { kind: 'a16_dangerous_word' as const, word: 'disappear' };
+  assert.ok(retryOverrideMessage(reason).includes('disappear'));
+  assert.ok(retryOverrideMessage(reason).includes('§8'));
+  assert.equal(retryFailureFlag(reason), 'a16_dangerous_word_retry_failed:disappear');
+});
+
+at('withDraftRetry never substitutes for a16_dangerous_word — it is a hard block, not stylistic', async () => {
+  const result = await withDraftRetry(
+    pt({ act: 'A16', say: 'Disappear.' }),
+    '<work>act: A16</work><say>Disappear.</say>',
+    RETRY_CTX_BASE,
+    async () => '<work>act: A16</work><say>Empty.</say>',
+  );
+  assert.equal(result.retryFailed, true);
+  assert.equal(result.substituted, null);
+  assert.equal(retryFailureFlag(result.reason!), 'a16_dangerous_word_retry_failed:empty');
+});
+
+// --- Adversarial round 3, finding 6: A14/A15 content exclusions ---
+
+t('isA14Excluded recognises an abstinence or recovery commitment', () => {
+  assert.equal(isA14Excluded("I can't drink. Not one."), true);
+  assert.equal(isA14Excluded('Six months sober now.'), true);
+  assert.equal(isA14Excluded('Staying sober is the whole plan.'), true);
+});
+
+t('isA14Excluded recognises treatment or medication adherence', () => {
+  assert.equal(isA14Excluded('I have to take the lithium every morning.'), true);
+});
+
+t('isA14Excluded recognises a material, bodily or developmental constraint', () => {
+  assert.equal(isA14Excluded("I'm autistic, that's just how my brain works."), true);
+  assert.equal(isA14Excluded('I go to dialysis three times a week.'), true);
+});
+
+t('isA14Excluded recognises worthlessness or burdensomeness language (also §8 material)', () => {
+  assert.equal(isA14Excluded('Nobody would miss me.'), true);
+  assert.equal(isA14Excluded("They'd be better off without me."), true);
+});
+
+t('isA14Excluded recognises Hebrew equivalents', () => {
+  assert.equal(isA14Excluded('אני לא נוגע בטיפה, אף פעם.'), true);
+  assert.equal(isA14Excluded('אני אוטיסט וזה חלק ממני.'), true);
+  assert.equal(isA14Excluded('אף אחד לא יתגעגע אליי.'), true);
+});
+
+t('isA14Excluded is false for ordinary master-discourse material', () => {
+  assert.equal(isA14Excluded("I'm someone who can't do relationships."), false);
+});
+
+t('isA15Excluded recognises disability or neurodevelopmental terms', () => {
+  assert.equal(isA15Excluded('My ADHD makes mornings hard.'), true);
+  assert.equal(isA15Excluded('אני עם דיסלקציה.'), true);
+});
+
+t('isA15Excluded is false for ordinary borrowed-vocabulary material', () => {
+  assert.equal(isA15Excluded('It was my avoidant attachment again.'), false);
+});
+
+t('decideDraftRetry hard-blocks A14 on excluded content', () => {
+  const r = decideDraftRetry(pt({ act: 'A14', say: "'Not one.' Since when?" }), {
+    ...RETRY_CTX_BASE,
+    userA14Excluded: true,
+  });
+  assert.deepEqual(r, { kind: 'a14_excluded' });
+});
+
+t('decideDraftRetry does not block A14 without excluded content', () => {
+  const r = decideDraftRetry(pt({ act: 'A14', say: "'Can't.' Since when?" }), {
+    ...RETRY_CTX_BASE,
+    userA14Excluded: false,
+  });
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry hard-blocks A15 on excluded content', () => {
+  const r = decideDraftRetry(pt({ act: 'A15', say: "'ADHD' is theirs. What shuts?" }), {
+    ...RETRY_CTX_BASE,
+    userA15Excluded: true,
+  });
+  assert.deepEqual(r, { kind: 'a15_excluded' });
+});
+
+t('decideDraftRetry does not block A15 without excluded content', () => {
+  const r = decideDraftRetry(pt({ act: 'A15', say: "'Avoidant' is theirs. What shuts?" }), {
+    ...RETRY_CTX_BASE,
+    userA15Excluded: false,
+  });
+  assert.equal(r, null);
+});
+
+t('required speech, GATE and ANCHORED still bypass the A14/A15 exclusion blocks', () => {
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A14', mode: 'ANCHORED' }), { ...RETRY_CTX_BASE, userA14Excluded: true }),
+    null,
+  );
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A15', mode: 'GATE' }), { ...RETRY_CTX_BASE, userA15Excluded: true }),
+    null,
+  );
+});
+
+t('retryOverrideMessage and retryFailureFlag cover a14_excluded and a15_excluded', () => {
+  assert.ok(retryOverrideMessage({ kind: 'a14_excluded' }).toUpperCase().includes('A14'));
+  assert.ok(retryOverrideMessage({ kind: 'a15_excluded' }).toUpperCase().includes('A15'));
+  assert.equal(retryFailureFlag({ kind: 'a14_excluded' }), 'a14_excluded_retry_failed');
+  assert.equal(retryFailureFlag({ kind: 'a15_excluded' }), 'a15_excluded_retry_failed');
 });
 
 await Promise.all(pending);

@@ -28,6 +28,26 @@ export function nextUnusedMinimalForm(used: string[]): string | null {
 }
 
 /**
+ * Adversarial round 3, finding 1: the "Go on." placeholder for an empty or
+ * refused draft was applied unconditionally, mode included — a provider
+ * refusal or a malformed GATE turn with no <say> content would show the
+ * analytic-mode placeholder in place of a crisis response. GATE gets its own
+ * safe, plain fallback instead; every other mode is unaffected.
+ */
+export function emptySayFallback(mode: ParsedTurn['mode'], crisisResources: string): string {
+  if (mode !== 'GATE') return 'Go on.';
+  const resourceLine =
+    crisisResources === 'UNAVAILABLE'
+      ? 'I do not have a verified number for your location — please look up your local emergency number or crisis line.'
+      : crisisResources;
+  return (
+    'I do not have a reply from you to work with right now, and I am not going to leave that unaddressed. ' +
+    'I am a machine, not a substitute for a person. If you are in danger, please contact emergency services now. ' +
+    resourceLine
+  );
+}
+
+/**
  * Server-side enforcement of the frame.
  *
  * The model is told the rules, but the rules are not left to the model.
@@ -151,13 +171,54 @@ function maxTokenOverlap(say: string, recentUtterances: string[]): number {
   return max;
 }
 
+/**
+ * Adversarial round 3, finding 5: A16's own exclusion-1 and "Read twice"
+ * name this as the most dangerous single instruction in the prompt — a turn
+ * consisting only of a word naming self-annihilation, self-punishment,
+ * restriction or harm is §8 material, not a signifier to let stand. The A16
+ * cap/window/echo mechanisms are purely mechanical and never checked
+ * content; this does. Deliberately the same words the prompt itself names,
+ * in both languages this system reads — not an attempt at exhaustive
+ * clinical coverage.
+ */
+const A16_DANGEROUS_WORDS = new Set([
+  'disappear',
+  'empty',
+  'punish',
+  'gone',
+  'nothing',
+  'להיעלם',
+  'נעלם',
+  'נעלמת',
+  'תיעלם',
+  'ריק',
+  'ריקה',
+  'להתרוקן',
+  'התרוקן',
+  'להעניש',
+  'עונש',
+  'איננו',
+  'כלום',
+]);
+
+/** The dangerous word `say` names, if any — checked as tokens so a gloss ("I should just disappear") is caught, not only a bare echo. */
+function findA16DangerousWord(say: string): string | null {
+  for (const t of tokenize(say)) {
+    if (A16_DANGEROUS_WORDS.has(t)) return t;
+  }
+  return null;
+}
+
 export type DraftRetryReason =
   | { kind: 'reports_repetition' }
   | { kind: 'frame_complaint' }
   | { kind: 'run_limit'; act: string }
   | { kind: 'minimal_form_reused'; form: string }
+  | { kind: 'a16_dangerous_word'; word: string }
   | { kind: 'a16_cap'; limit: number }
   | { kind: 'a16_window' }
+  | { kind: 'a14_excluded' }
+  | { kind: 'a15_excluded' }
   | { kind: 'echoed_signifier'; term: string }
   | { kind: 'near_duplicate'; overlap: number };
 
@@ -180,14 +241,19 @@ export interface DraftRetryContext {
   userFrameComplaint: boolean;
   /** Does the analysand's current turn report that he is repeating himself? */
   userReportsRepetition: boolean;
+  /** Does the analysand's current turn match one of A14's six textually-identifiable exclusions? */
+  userA14Excluded: boolean;
+  /** Does the analysand's current turn match one of A15's textually-identifiable exclusions? */
+  userA15Excluded: boolean;
 }
 
 /**
  * Everything that earns a draft exactly one regeneration: a hard block on a
  * minimal act when the analysand reports repetition or complains about the
- * frame, a third consecutive identical act, a reused minimal form, the A16
- * session cap or two-turn window, any-form return of a currently-blocked
- * signifier, or a near-duplicate of a recent utterance.
+ * frame, a third consecutive identical act, a reused minimal form, A16 on a
+ * self-annihilation word, the A16 session cap or two-turn window, A14/A15
+ * used against a textually-identifiable exclusion, any-form return of a
+ * currently-blocked signifier, or a near-duplicate of a recent utterance.
  *
  * Required speech, GATE and ANCHORED turns are never subject to any of this —
  * safety and required speech are never regenerated for stylistic reasons.
@@ -207,7 +273,12 @@ export function decideDraftRetry(p: ParsedTurn, ctx: DraftRetryContext): DraftRe
     if (form && ctx.usedMinimalForms.includes(form)) return { kind: 'minimal_form_reused', form };
   }
 
+  if (p.act === 'A14' && ctx.userA14Excluded) return { kind: 'a14_excluded' };
+  if (p.act === 'A15' && ctx.userA15Excluded) return { kind: 'a15_excluded' };
+
   if (p.act === 'A16') {
+    const dangerousWord = findA16DangerousWord(p.say);
+    if (dangerousWord) return { kind: 'a16_dangerous_word', word: dangerousWord };
     if (ctx.a16CountThisSession >= config.maxA16PerSession)
       return { kind: 'a16_cap', limit: config.maxA16PerSession };
     if (ctx.recentActs.slice(0, 2).includes('A16')) return { kind: 'a16_window' };
@@ -295,6 +366,12 @@ export function retryOverrideMessage(reason: DraftRetryReason): string {
       return `\n\nSERVER OVERRIDE: ${reason.act} would be the third consecutive identical act this turn. ${reason.act} is forbidden — choose a different act, or A20.`;
     case 'minimal_form_reused':
       return `\n\nSERVER OVERRIDE: "${reason.form}" has already been used as a minimal act this session. Do not reuse it — choose a different minimal form, one of his own words, or a different act.`;
+    case 'a16_dangerous_word':
+      return `\n\nSERVER OVERRIDE: "${reason.word}" names self-annihilation, self-punishment, restriction or harm. Per §8 this is gate material, not a signifier to let stand — A16 is forbidden this turn. Reconsider whether this turn requires the gate.`;
+    case 'a14_excluded':
+      return `\n\nSERVER OVERRIDE: what he said matches one of A14's six exclusions (abstinence/recovery commitment, treatment adherence, protective boundary, material/bodily/developmental constraint, first disclosure, or worthlessness/burdensomeness). A14 is forbidden this turn — choose a different act.`;
+    case 'a15_excluded':
+      return `\n\nSERVER OVERRIDE: what he said matches one of A15's exclusions (a clinical diagnosis, a disability or neurodevelopmental term, vocabulary shared with active treatment, a frame that replaced self-blame, or an ordinary emotion word). A15 is forbidden this turn — choose a different act.`;
     case 'a16_cap':
       return `\n\nSERVER OVERRIDE: A16 has already been used ${reason.limit} times this session, the session cap. A16 is forbidden this turn — choose a different act.`;
     case 'a16_window':
@@ -316,6 +393,12 @@ export function retryFailureFlag(reason: DraftRetryReason): string {
       return `run_limit_retry_failed:${reason.act}`;
     case 'minimal_form_reused':
       return `minimal_form_reused_retry_failed:${reason.form}`;
+    case 'a16_dangerous_word':
+      return `a16_dangerous_word_retry_failed:${reason.word}`;
+    case 'a14_excluded':
+      return 'a14_excluded_retry_failed';
+    case 'a15_excluded':
+      return 'a15_excluded_retry_failed';
     case 'a16_cap':
       return 'a16_cap_retry_failed';
     case 'a16_window':

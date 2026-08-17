@@ -652,6 +652,86 @@ export function reportsRepetition(text: string): boolean {
 }
 
 /**
+ * Adversarial round 3, finding 6: A14/A15's six exclusions each (§6) were
+ * enforced only as prompt text, with no server backup — the exact defect
+ * class that produced two prior-round failures (A14 hystericising a
+ * sobriety commitment).
+ *
+ * This is a best-effort textual backstop for the categories that are
+ * actually identifiable from the analysand's own words, not a complete
+ * implementation of all twelve exclusions — several depend on context this
+ * function cannot see (whether a diagnosis came from a clinician he is
+ * currently under, whether this is a *first* disclosure, whether a boundary
+ * is protective against someone who harmed him). Those stay prompt-governed.
+ * Covered here: A14's abstinence/recovery commitment, treatment/medication
+ * adherence, material/bodily/developmental constraint, and worthlessness/
+ * burdensomeness (also §8 material); A15's disability/neurodevelopmental
+ * term naming.
+ */
+const A14_EXCLUDED_EN = [
+  /\bi (?:can'?t|won'?t|don'?t|do not) (?:drink|use|gamble|smoke)\b/i,
+  /\bnot (?:one|a drop|a single (?:drink|drop|pill))\b/i,
+  /\b\w+ (?:days?|weeks?|months?|years?) sober\b/i,
+  /\bin recovery\b/i,
+  /\bstay(?:ing)? sober\b/i,
+  /\bmy sobriety\b/i,
+  /\bi (?:have to|need to|must) take (?:my|the) (?:medication|meds|pills?|lithium|insulin)\b/i,
+  /\btake my (?:medication|meds|pills?|lithium|insulin) every\b/i,
+  /\bnobody would miss me\b/i,
+  /\bthey'?d be better off without me\b/i,
+  /\bi'?m a burden\b/i,
+  /\bi don'?t deserve to live\b/i,
+];
+
+const A14_EXCLUDED_HE = [
+  'לא נוגע בטיפה',
+  'לא שותה טיפה',
+  'מפוכח',
+  'מפוכחת',
+  'נקי מסמים',
+  'נקייה מסמים',
+  'בהתפכחות',
+  'חייב לקחת את התרופה',
+  'חייבת לקחת את התרופה',
+  'צריך לקחת תרופה',
+  'צריכה לקחת תרופה',
+  'אף אחד לא יתגעגע אליי',
+  'יהיה להם יותר טוב בלעדיי',
+  'אני נטל',
+  'לא מגיע לי לחיות',
+];
+
+/** Shared between A14 exclusion (4) and A15 exclusion (2) — a material/bodily/neurodevelopmental term. */
+const DISABILITY_TERMS_EN = [
+  /\b(?:autis(?:m|tic)|disab(?:led|ility)|dialysis|wheelchair|chronic illness|neurodivergen(?:t|ce)|adhd|dyslexi[ac])\b/i,
+];
+
+const DISABILITY_TERMS_HE = [
+  'אוטיזם',
+  'אוטיסט',
+  'אוטיסטית',
+  'נכות',
+  'מוגבלות',
+  'דיאליזה',
+  'כיסא גלגלים',
+  'דיסלקציה',
+];
+
+export function isA14Excluded(text: string): boolean {
+  if (A14_EXCLUDED_EN.some((p) => p.test(text))) return true;
+  if (DISABILITY_TERMS_EN.some((p) => p.test(text))) return true;
+  const lower = text.toLowerCase();
+  if (A14_EXCLUDED_HE.some((phrase) => lower.includes(phrase))) return true;
+  return DISABILITY_TERMS_HE.some((phrase) => lower.includes(phrase));
+}
+
+export function isA15Excluded(text: string): boolean {
+  if (DISABILITY_TERMS_EN.some((p) => p.test(text))) return true;
+  const lower = text.toLowerCase();
+  return DISABILITY_TERMS_HE.some((phrase) => lower.includes(phrase));
+}
+
+/**
  * The UI sends this exact text as turn 1 to nudge the analyst's unprompted
  * opening (§2) — it is a stage direction, not analysand speech, and must
  * never feed the ledger, assent tracking, or any other analysand-turn

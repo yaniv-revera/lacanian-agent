@@ -20,6 +20,7 @@ import { parseTurn } from '../agent/parse.js';
 import {
   auditTurn,
   consecutiveMinimalActs,
+  emptySayFallback,
   evaluateEnd,
   isChallengeAct,
   matchMinimalForm,
@@ -31,6 +32,8 @@ import {
 import {
   assentRunStats,
   blockedSignifiers,
+  isA14Excluded,
+  isA15Excluded,
   isFrameComplaint,
   isSessionOpeningTrigger,
   recordAnalystNote,
@@ -146,6 +149,8 @@ sessionRouter.post('/say', async (req, res) => {
   ];
   const userFrameComplaint = isFrameComplaint(text);
   const userReportsRepetition = reportsRepetition(text);
+  const userA14Excluded = isA14Excluded(text);
+  const userA15Excluded = isA15Excluded(text);
 
   const system = buildSystemPrompt({
     ledger: { ...afterUser, session_count: s.session_index },
@@ -178,7 +183,7 @@ sessionRouter.post('/say', async (req, res) => {
   }
 
   let parsed = parseTurn(raw);
-  if (!parsed.say) parsed.say = 'Go on.';
+  if (!parsed.say) parsed.say = emptySayFallback(parsed.mode, config.crisisResources);
 
   // 3b. Draft-retry enforcement: a hard block on a minimal act when the
   // analysand reports repetition or complains about the frame, a run limit, a
@@ -198,6 +203,8 @@ sessionRouter.post('/say', async (req, res) => {
         usedMinimalForms,
         userFrameComplaint,
         userReportsRepetition,
+        userA14Excluded,
+        userA15Excluded,
       },
       async (reason) => {
         const retrySystem = {
@@ -209,7 +216,7 @@ sessionRouter.post('/say', async (req, res) => {
     );
     if (retryResult.retried) {
       parsed = retryResult.parsed;
-      if (!parsed.say) parsed.say = 'Go on.';
+      if (!parsed.say) parsed.say = emptySayFallback(parsed.mode, config.crisisResources);
       if (retryResult.substituted) {
         retryFailFlag = `minimal_form_substituted:${retryResult.substituted.from}->${retryResult.substituted.to}`;
       } else if (retryResult.retryFailed && retryResult.reason) {
