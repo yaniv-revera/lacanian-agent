@@ -231,10 +231,34 @@ const CLAIMED_FEELING_HE = [
   'אני איתך',
 ];
 
+/**
+ * Regression fix (live-transcript finding 1): quoting the analysand's own
+ * words verbatim is the agent's single most characteristic act (Rule 1) —
+ * an echo like '"אני מרגיש."' or '"2019."' is not the agent claiming
+ * feeling or inventing a number, it is returning exactly what he said.
+ * Strip every quoted span before running claimed-feeling/invented-number
+ * detection, so only the agent's own unquoted voice is checked. Straight
+ * double quotes, curly quotes, and Hebrew gershayim are stripped
+ * unconditionally; straight single quotes only when neither apostrophe
+ * sits between two letters, so contractions ("don't", "I'm") are not
+ * mistaken for quote boundaries. This is a heuristic, not a parser, and can
+ * still mishandle a quoted word that itself contains an apostrophe
+ * ("'don't'").
+ */
+function stripQuotedSpans(text: string): string {
+  return text
+    .replace(/"[^"]*"/g, ' ')
+    .replace(/“[^”]*”/g, ' ')
+    .replace(/״[^״]*״/g, ' ')
+    .replace(/(?<![A-Za-zא-ת])'[^']*'(?![A-Za-zא-ת])/g, ' ')
+    .replace(/(?<![A-Za-zא-ת])‘[^’]*’(?![A-Za-zא-ת])/g, ' ');
+}
+
 function findClaimedFeeling(say: string): string | null {
-  const m = say.match(CLAIMED_FEELING_EN);
+  const unquoted = stripQuotedSpans(say);
+  const m = unquoted.match(CLAIMED_FEELING_EN);
   if (m) return m[0];
-  const lower = say.toLowerCase();
+  const lower = unquoted.toLowerCase();
   for (const phrase of CLAIMED_FEELING_HE) {
     if (lower.includes(phrase)) return phrase;
   }
@@ -243,17 +267,42 @@ function findClaimedFeeling(say: string): string | null {
 
 /**
  * Same finding: "never invent, guess, or recall a hotline number" (§8) was
- * also audit-only. Same detection the audit used (digit-shaped sequences
- * not present in the configured resource list), now a hard block. Known
- * limitation, unchanged from the audit version: short 2-3 digit codes
- * ("911", "988", "999") don't match this pattern at all, since it requires
- * two digit-groups — a gap in the pattern, not something this promotion
- * introduces or fixes.
+ * also audit-only, now promoted.
+ *
+ * Regression fix (live-transcript finding 2): the original digit-shaped
+ * sequence check over-fired on ordinary numbers in the agent's own speech —
+ * years, ages, counts — that are not phone numbers. Narrowed to: 3+ digits
+ * AND (a separator between digit groups, OR immediate proximity to a
+ * call/dial/text/hotline/number word). A quoted echo of a number is also
+ * exempt, per finding 1 above. Known limitation, unchanged: short 2-3 digit
+ * codes ("911", "988", "999") still don't match unless adjacent to a
+ * trigger word — not something this narrowing introduces or widens.
  */
+const SEPARATED_NUMBER_RE = /\b\d{2,4}(?:[-.\s]\d{2,4}){1,3}\b/g;
+const BARE_NUMBER_RE = /\b\d{3,}\b/g;
+const CALL_WORD_EN = /\b(?:call|dial|text|hotline|number)\b/i;
+const CALL_WORD_HE = ['להתקשר', 'לחייג', 'מוקד', 'קו'];
+
+function nearCallWord(say: string, index: number, length: number): boolean {
+  const window = say.slice(Math.max(0, index - 30), Math.min(say.length, index + length + 30));
+  if (CALL_WORD_EN.test(window)) return true;
+  const lower = window.toLowerCase();
+  return CALL_WORD_HE.some((w) => lower.includes(w));
+}
+
+function candidateNumbers(say: string): string[] {
+  const candidates = new Set<string>();
+  for (const m of say.matchAll(SEPARATED_NUMBER_RE)) candidates.add(m[0].trim());
+  for (const m of say.matchAll(BARE_NUMBER_RE)) {
+    if (nearCallWord(say, m.index ?? 0, m[0].length)) candidates.add(m[0].trim());
+  }
+  return [...candidates];
+}
+
 function findInventedNumber(say: string, crisisResources: string): string | null {
-  const numbers = say.match(/\b\d{3,4}[- ]?\d{3,4}[- ]?\d{0,4}\b/g) ?? [];
-  for (const n of numbers) {
-    if (crisisResources === 'UNAVAILABLE' || !crisisResources.includes(n.trim())) return n.trim();
+  const unquoted = stripQuotedSpans(say);
+  for (const n of candidateNumbers(unquoted)) {
+    if (crisisResources === 'UNAVAILABLE' || !crisisResources.includes(n)) return n;
   }
   return null;
 }

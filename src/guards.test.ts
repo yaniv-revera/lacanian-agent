@@ -1628,6 +1628,110 @@ t('nominations still parse normally with no act: field present at all (fallback,
   assert.equal(p.borrowedTermNominations[0]?.term, 'gaslighting');
 });
 
+// --- Regression fixes: finding-2/4 hard blocks were firing on the agent's
+// own verbatim quoting of the analysand, and on ordinary non-crisis speech.
+
+// Finding 1: quoted spans must be exempt from claimed_feeling/invented_number.
+
+t('real transcript: a bare quoted echo of "אני מרגיש" is not a claimed feeling', () => {
+  // analysand: "אני מרגיש שאני כועס יותר" → agent (A3): '"אני מרגיש."' — an
+  // echo, not a claim.
+  const r = decideDraftRetry(pt({ act: 'A3', say: '"אני מרגיש."' }), RETRY_CTX_BASE);
+  assert.equal(r, null);
+});
+
+t('real transcript: a bare quoted echo of "אני מבין" is not a claimed feeling', () => {
+  // analysand: "אני לא מבין" → agent echoes '"אני מבין."'
+  const r = decideDraftRetry(pt({ act: 'A3', say: '"אני מבין."' }), RETRY_CTX_BASE);
+  assert.equal(r, null);
+});
+
+t('real transcript: a quoted year is not an invented hotline number', () => {
+  // analysand: "since 2019" → agent echoes '"2019."'
+  const r = decideDraftRetry(pt({ act: 'A3', say: '"2019."' }), RETRY_CTX_BASE);
+  assert.equal(r, null);
+});
+
+t('an UNQUOTED claim of feeling is still blocked — only verbatim quotes are exempt', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: 'I really care about you.' }), RETRY_CTX_BASE);
+  assert.equal(r?.kind, 'claimed_feeling');
+});
+
+t('an UNQUOTED Hebrew claim of feeling is still blocked', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: 'אני מרגיש בדיוק מה שאתה מרגיש.' }), RETRY_CTX_BASE);
+  assert.equal(r?.kind, 'claimed_feeling');
+});
+
+t('a quoted phrase using a curly or Hebrew-style quotation mark is also exempt', () => {
+  assert.equal(decideDraftRetry(pt({ act: 'A3', say: '“I care about you.”' }), RETRY_CTX_BASE), null);
+});
+
+t('an unquoted invented number is still blocked when it has a separator', () => {
+  const r = decideDraftRetry(
+    pt({ act: 'GATE', mode: 'GATE', say: 'Please call 555-0100 right now.' }),
+    RETRY_CTX_BASE,
+  );
+  assert.equal(r?.kind, 'invented_number');
+});
+
+// Finding 2: findInventedNumber over-fired on ordinary bare numbers.
+
+t('a bare year with no separator and no call-word nearby is not an invented number', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: 'You said it started in 2019.' }), RETRY_CTX_BASE);
+  assert.equal(r, null);
+});
+
+t('a bare count with no separator and no call-word nearby is not an invented number', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: "You've read that book 150 times." }), RETRY_CTX_BASE);
+  assert.equal(r, null);
+});
+
+t('a bare number IS flagged when adjacent to a call-word, English', () => {
+  const r = decideDraftRetry(
+    pt({ act: 'GATE', mode: 'GATE', say: 'The hotline number is 5550100.' }),
+    RETRY_CTX_BASE,
+  );
+  assert.equal(r?.kind, 'invented_number');
+});
+
+t('a bare number IS flagged when adjacent to a call-word, Hebrew', () => {
+  const r = decideDraftRetry(
+    pt({ act: 'GATE', mode: 'GATE', say: 'תתקשר למוקד 5550100 עכשיו.' }),
+    RETRY_CTX_BASE,
+  );
+  assert.equal(r?.kind, 'invented_number');
+});
+
+t('a separated number is still flagged with no call-word nearby at all', () => {
+  const r = decideDraftRetry(pt({ act: 'GATE', mode: 'GATE', say: 'Try 555-0100.' }), RETRY_CTX_BASE);
+  assert.equal(r?.kind, 'invented_number');
+});
+
+// Finding 3: "there's no point" / "אין טעם" over-fired without self-reference.
+
+t('isExplicitCrisisLanguage does not fire on "no point" without a self-referential subject', () => {
+  assert.equal(isExplicitCrisisLanguage("There's no point arguing with her."), false);
+  assert.equal(isExplicitCrisisLanguage('אין טעם להתקשר אליו עכשיו.'), false);
+});
+
+t('isExplicitCrisisLanguage still fires on "no point" WITH a self-referential subject, English', () => {
+  assert.equal(isExplicitCrisisLanguage("There's no point for me anymore."), true);
+  assert.equal(isExplicitCrisisLanguage("There's no point in my life."), true);
+});
+
+t('isExplicitCrisisLanguage still fires on "no point" WITH a self-referential subject, Hebrew', () => {
+  assert.equal(isExplicitCrisisLanguage('אין טעם בשבילי להמשיך.'), true);
+  assert.equal(isExplicitCrisisLanguage('אני חושב שאין טעם, לי אין שום דבר.'), true);
+});
+
+t('the other explicit-crisis entries are untouched — no self-reference gating added to them', () => {
+  assert.equal(isExplicitCrisisLanguage('Nobody would miss me.'), true);
+  assert.equal(isExplicitCrisisLanguage("They'd be better off without me."), true);
+  assert.equal(isExplicitCrisisLanguage('אף אחד לא יתגעגע אליי.'), true);
+  // "אין שום טעם" was not the reported false-positive entry and stays as-is.
+  assert.equal(isExplicitCrisisLanguage('אין שום טעם בכלום.'), true);
+});
+
 await Promise.all(pending);
 
 console.error(`\n  ${passed} guard tests passed\n`);

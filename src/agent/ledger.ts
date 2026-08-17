@@ -753,7 +753,6 @@ const EXPLICIT_CRISIS_EN = [
   /\bthey'?d be better off without me\b/i,
   /\bi'?m a burden\b/i,
   /\bi don'?t deserve to live\b/i,
-  /\bthere'?s no point\b/i,
   /\bkill myself\b/i,
   /\bend my life\b/i,
   /\bsuicid(?:e|al)\b/i,
@@ -767,7 +766,6 @@ const EXPLICIT_CRISIS_HE = [
   'יהיה להם יותר טוב בלעדיי',
   'אני נטל',
   'לא מגיע לי לחיות',
-  'אין טעם',
   'אין שום טעם',
   'להתאבד',
   'התאבדות',
@@ -777,10 +775,36 @@ const EXPLICIT_CRISIS_HE = [
   'לא רוצה לחיות יותר',
 ];
 
+/**
+ * Regression fix (live-transcript finding 3): "there's no point" and "אין
+ * טעם" alone are ordinary everyday speech ("there's no point arguing with
+ * her", "אין טעם להתקשר אליו") and fired constantly — possible_missed_gate
+ * outranks ANCHORED and required speech, so every false fire burns a retry
+ * and trains the model that the override is noise. Require a first-person
+ * self-referential subject in the SAME sentence before either counts.
+ * "אין שום טעם" was not the reported false-positive and is untouched above.
+ */
+const NO_POINT_EN = /\bthere'?s no point\b/i;
+const NO_POINT_HE = 'אין טעם';
+const SELF_REFERENTIAL_EN = /\b(?:my life|for me|me)\b/i;
+const SELF_REFERENTIAL_HE_WORDS = ['אני', 'לי', 'בשבילי'];
+
+function noPointAboutSelf(text: string): boolean {
+  for (const s of sentences(text)) {
+    const mentionsNoPoint = NO_POINT_EN.test(s) || s.includes(NO_POINT_HE);
+    if (!mentionsNoPoint) continue;
+    if (SELF_REFERENTIAL_EN.test(s)) return true;
+    const words = wordsOf(s);
+    if (SELF_REFERENTIAL_HE_WORDS.some((w) => words.includes(w))) return true;
+  }
+  return false;
+}
+
 export function isExplicitCrisisLanguage(text: string): boolean {
   if (EXPLICIT_CRISIS_EN.some((p) => p.test(text))) return true;
   const lower = text.toLowerCase();
-  return EXPLICIT_CRISIS_HE.some((phrase) => lower.includes(phrase));
+  if (EXPLICIT_CRISIS_HE.some((phrase) => lower.includes(phrase))) return true;
+  return noPointAboutSelf(text);
 }
 
 /**
