@@ -22,6 +22,7 @@ import {
   evaluateEnd,
   isChallengeAct,
   shouldLock,
+  withRunLimitRetry,
 } from '../agent/guards.js';
 import { recordAnalystNote, updateLedgerFromUser } from '../agent/ledger.js';
 import { getProvider, type ChatMessage } from '../llm/index.js';
@@ -126,8 +127,30 @@ sessionRouter.post('/say', async (req, res) => {
     return;
   }
 
-  const parsed = parseTurn(raw);
+  let parsed = parseTurn(raw);
   if (!parsed.say) parsed.say = 'Go on.';
+
+  // 3b. Run-limit enforcement: a third consecutive identical act gets one
+  // regeneration. Safety and required speech are never regenerated for this.
+  let runLimitRetryFailedAct: string | null = null;
+  try {
+    const retryResult = await withRunLimitRetry(parsed, raw, acts, async (forbiddenAct) => {
+      const retrySystem = {
+        stable: system.stable,
+        volatile:
+          system.volatile +
+          `\n\nSERVER OVERRIDE: ${forbiddenAct} would be the third consecutive identical act this turn. ${forbiddenAct} is forbidden — choose a different act, or A20.`,
+      };
+      return getProvider().complete(retrySystem, history);
+    });
+    if (retryResult.retried) {
+      parsed = retryResult.parsed;
+      if (!parsed.say) parsed.say = 'Go on.';
+      if (retryResult.retryFailed) runLimitRetryFailedAct = retryResult.forbiddenAct;
+    }
+  } catch (err) {
+    console.error('[llm] run-limit retry failed, using original draft', err);
+  }
 
   // 4. Enforce the frame. The model proposes; the server disposes.
   const gateLatched = !!s.gate_latched || parsed.gateFired;
@@ -141,6 +164,7 @@ sessionRouter.post('/say', async (req, res) => {
   const flags = auditTurn(parsed, { recentActs: acts, mode: parsed.mode, turnCount: nextIdx });
   if (parsed.wantsEnd && !decision.allowed) flags.push(`end_refused:${decision.reason}`);
   if (desupposition) flags.push('desupposition_by_user');
+  if (runLimitRetryFailedAct) flags.push(`run_limit_retry_failed:${runLimitRetryFailedAct}`);
   if (flags.length) console.error(`[audit s${s.id} t${nextIdx}]`, flags.join(' '));
 
   const workLog = [parsed.work, flags.length ? `\n[server flags] ${flags.join(' ')}` : ''].join('');

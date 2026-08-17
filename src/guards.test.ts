@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
 import { config } from './config.js';
-import { evaluateEnd, shouldLock, auditTurn, consecutiveMinimalActs } from './agent/guards.js';
+import {
+  evaluateEnd,
+  shouldLock,
+  auditTurn,
+  consecutiveMinimalActs,
+  shouldRetryForRunLimit,
+  withRunLimitRetry,
+} from './agent/guards.js';
 import { parseTurn } from './agent/parse.js';
 import type { ParsedTurn } from './types.js';
 
 let passed = 0;
+const pending: Promise<void>[] = [];
+
 function t(name: string, fn: () => void): void {
   try {
     fn();
@@ -13,6 +22,20 @@ function t(name: string, fn: () => void): void {
     console.error(`FAIL ${name}`);
     throw e;
   }
+}
+
+function at(name: string, fn: () => Promise<void>): void {
+  pending.push(
+    fn().then(
+      () => {
+        passed++;
+      },
+      (e) => {
+        console.error(`FAIL ${name}`);
+        throw e;
+      },
+    ),
+  );
 }
 
 const base = { turnCount: 20, gateLatched: false, lastAnalystAct: 'A3', mode: 'ANALYTIC' as const };
@@ -242,6 +265,25 @@ t('two consecutive A1 is not flagged', () => {
   assert.ok(!f.some((x) => x.includes('consecutive_A1')));
 });
 
+t('three_consecutive_A2 does not fire on a short window (vacuous truth guard)', () => {
+  const empty = auditTurn(pt({ act: 'A2', say: 'What comes to mind?' }), {
+    recentActs: [], mode: 'ANALYTIC', turnCount: 2,
+  });
+  assert.ok(!empty.includes('three_consecutive_A2'));
+
+  const one = auditTurn(pt({ act: 'A2', say: 'What comes to mind?' }), {
+    recentActs: ['A2'], mode: 'ANALYTIC', turnCount: 2,
+  });
+  assert.ok(!one.includes('three_consecutive_A2'));
+});
+
+t('three_consecutive_A2 fires on a full window', () => {
+  const f = auditTurn(pt({ act: 'A2', say: 'What comes to mind?' }), {
+    recentActs: ['A2', 'A2'], mode: 'ANALYTIC', turnCount: 5,
+  });
+  assert.ok(f.includes('three_consecutive_A2'));
+});
+
 // --- consecutive minimal act counting (for prompt injection) ---
 
 t('consecutiveMinimalActs counts the leading run of A1', () => {
@@ -254,5 +296,94 @@ t('consecutiveMinimalActs counts the leading run of A1', () => {
 t('consecutiveMinimalActs stops at the first non-A1 act, most recent first', () => {
   assert.equal(consecutiveMinimalActs(['A3', 'A1', 'A1']), 0);
 });
+
+// --- run-limit enforcement ---
+
+t('shouldRetryForRunLimit is false on a short window', () => {
+  assert.equal(shouldRetryForRunLimit(pt({ act: 'A2' }), []), false);
+  assert.equal(shouldRetryForRunLimit(pt({ act: 'A2' }), ['A2']), false);
+});
+
+t('shouldRetryForRunLimit is true on a third consecutive identical act', () => {
+  assert.equal(shouldRetryForRunLimit(pt({ act: 'A2' }), ['A2', 'A2']), true);
+  assert.equal(shouldRetryForRunLimit(pt({ act: 'A1' }), ['A1', 'A1']), true);
+});
+
+t('shouldRetryForRunLimit never fires for required speech, gate, or anchored turns', () => {
+  assert.equal(shouldRetryForRunLimit(pt({ act: 'A20' }), ['A20', 'A20']), false);
+  assert.equal(shouldRetryForRunLimit(pt({ act: 'A13' }), ['A13', 'A13']), false);
+  assert.equal(
+    shouldRetryForRunLimit(pt({ act: 'GATE', mode: 'GATE' }), ['GATE', 'GATE']),
+    false,
+  );
+  assert.equal(
+    shouldRetryForRunLimit(pt({ act: 'ANCHORED', mode: 'ANCHORED' }), ['ANCHORED', 'ANCHORED']),
+    false,
+  );
+});
+
+at('withRunLimitRetry does not call the provider again under the limit', async () => {
+  let calls = 0;
+  const result = await withRunLimitRetry(pt({ act: 'A2' }), '<work>act: A2</work><say>x</say>', ['A2'], async () => {
+    calls++;
+    return '<work>act: A2</work><say>x</say>';
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.retried, false);
+});
+
+at('withRunLimitRetry retries exactly once and accepts a different act', async () => {
+  let calls = 0;
+  const result = await withRunLimitRetry(
+    pt({ act: 'A2', say: 'Hm.' }),
+    '<work>act: A2</work><say>Hm.</say>',
+    ['A2', 'A2'],
+    async (forbiddenAct) => {
+      calls++;
+      assert.equal(forbiddenAct, 'A2');
+      return '<work>act: A3</work><say>You said "have to."</say>';
+    },
+  );
+  assert.equal(calls, 1);
+  assert.equal(result.retried, true);
+  assert.equal(result.retryFailed, false);
+  assert.equal(result.parsed.act, 'A3');
+});
+
+at('withRunLimitRetry logs the failure and passes it through when the retry repeats the act', async () => {
+  let calls = 0;
+  const result = await withRunLimitRetry(
+    pt({ act: 'A2', say: 'first' }),
+    '<work>act: A2</work><say>first</say>',
+    ['A2', 'A2'],
+    async () => {
+      calls++;
+      return '<work>act: A2</work><say>second</say>';
+    },
+  );
+  assert.equal(calls, 1);
+  assert.equal(result.retried, true);
+  assert.equal(result.retryFailed, true);
+  assert.equal(result.parsed.act, 'A2');
+  assert.equal(result.parsed.say, 'second');
+});
+
+at('withRunLimitRetry never retries required speech, gate, or anchored turns', async () => {
+  let calls = 0;
+  const bump = async () => {
+    calls++;
+    return '<work>act: A20</work><say>x</say>';
+  };
+  await withRunLimitRetry(pt({ act: 'A20' }), '<work>act: A20</work><say>x</say>', ['A20', 'A20'], bump);
+  await withRunLimitRetry(
+    pt({ act: 'GATE', mode: 'GATE' }),
+    '<work>gate: risk\nact: GATE</work><say>x</say>',
+    ['GATE', 'GATE'],
+    bump,
+  );
+  assert.equal(calls, 0);
+});
+
+await Promise.all(pending);
 
 console.error(`\n  ${passed} guard tests passed\n`);

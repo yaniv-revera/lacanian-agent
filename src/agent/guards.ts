@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { parseTurn } from './parse.js';
 import type { EndDecision, ParsedTurn } from '../types.js';
 
 /**
@@ -88,8 +89,63 @@ export function consecutiveMinimalActs(acts: string[]): number {
 const REQUIRED_SPEECH_ACTS = new Set(['A13', 'A20']);
 
 /** A13, A20 and §4.6a corrections are required speech; the required-speech-shaped checks don't apply to them. */
-function isRequiredSpeechTurn(p: ParsedTurn): boolean {
+export function isRequiredSpeechTurn(p: ParsedTurn): boolean {
   return (p.act !== null && REQUIRED_SPEECH_ACTS.has(p.act)) || /4\.6a/.test(p.work);
+}
+
+/** Would `act` make three in a row, given the acts preceding it (most-recent-first)? */
+function wouldBeThirdConsecutive(act: string | null, recentActs: string[]): boolean {
+  if (act === null) return false;
+  if (act === 'A1') return consecutiveMinimalActs(recentActs) >= 2;
+  const lastTwo = recentActs.slice(0, 2);
+  return lastTwo.length === 2 && lastTwo.every((a) => a === act);
+}
+
+/**
+ * Server-side run-limit check: is this turn's act a third consecutive repeat
+ * that should be regenerated rather than merely flagged for review?
+ *
+ * Required speech, GATE and ANCHORED turns are never subject to this — safety
+ * and required speech are never regenerated for stylistic variety.
+ */
+export function shouldRetryForRunLimit(p: ParsedTurn, recentActs: string[]): boolean {
+  if (p.mode === 'GATE' || p.mode === 'ANCHORED') return false;
+  if (isRequiredSpeechTurn(p)) return false;
+  return wouldBeThirdConsecutive(p.act, recentActs);
+}
+
+export interface RunLimitRetryResult {
+  parsed: ParsedTurn;
+  raw: string;
+  /** True once a retry was attempted (regardless of whether it resolved the run). */
+  retried: boolean;
+  /** True when the retry still repeated the forbidden act. */
+  retryFailed: boolean;
+  forbiddenAct: string | null;
+}
+
+/**
+ * Discards a draft that would be a third consecutive identical act and asks
+ * the provider for exactly one alternative. If the retry repeats the act
+ * anyway, it is accepted as-is — the user is never blocked and never sees an
+ * error; the failure is reported via `retryFailed` for the caller to log.
+ */
+export async function withRunLimitRetry(
+  parsed: ParsedTurn,
+  raw: string,
+  recentActs: string[],
+  retry: (forbiddenAct: string) => Promise<string>,
+): Promise<RunLimitRetryResult> {
+  if (!shouldRetryForRunLimit(parsed, recentActs)) {
+    return { parsed, raw, retried: false, retryFailed: false, forbiddenAct: null };
+  }
+
+  const forbiddenAct = parsed.act as string;
+  const retryRaw = await retry(forbiddenAct);
+  const retryParsed = parseTurn(retryRaw);
+  const retryFailed = shouldRetryForRunLimit(retryParsed, recentActs);
+
+  return { parsed: retryParsed, raw: retryRaw, retried: true, retryFailed, forbiddenAct };
 }
 
 export interface AuditContext {
@@ -118,7 +174,8 @@ export function auditTurn(p: ParsedTurn, ctx: AuditContext): string[] {
     if (p.act === 'A1' && lastTwo.length === 2 && lastTwo.every((a) => a === 'A1'))
       flags.push('three_consecutive_A1');
 
-    if (p.act === 'A2' && ctx.recentActs.slice(0, 2).every((a) => a === 'A2'))
+    const lastTwoA2 = ctx.recentActs.slice(0, 2);
+    if (p.act === 'A2' && lastTwoA2.length === 2 && lastTwoA2.every((a) => a === 'A2'))
       flags.push('three_consecutive_A2');
 
     if (p.act === 'A7' && ctx.recentActs.includes('A7')) flags.push('second_cut_in_session');
