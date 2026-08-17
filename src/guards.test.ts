@@ -45,6 +45,7 @@ import {
   type LoginCodeRecord,
   type AuthTokenRecord,
 } from './agent/security.js';
+import { rateLimitedResponse } from './routes/rateLimit.js';
 
 let passed = 0;
 const pending: Promise<void>[] = [];
@@ -1870,6 +1871,24 @@ t('evaluateAuthToken: a token past its expiry is invalid', () => {
   const rec: AuthTokenRecord = { userId: 42, expiresAt: 999_999 };
   const v = evaluateAuthToken(rec, 1_000_000);
   assert.equal(v.valid, false);
+});
+
+// --- ב3: rate limiting on session creation and turn submission ---
+
+t('rateLimitedResponse: plain shape, no "say" field — never routed through the analyst voice', () => {
+  const r = rateLimitedResponse(5000);
+  assert.equal(r.error, 'rate_limited');
+  assert.equal('say' in r, false);
+});
+
+t('rateLimitedResponse: retryAfterSeconds rounds up to whole seconds', () => {
+  const r = rateLimitedResponse(1500);
+  assert.equal(r.retryAfterSeconds, 2);
+});
+
+t('rateLimitedResponse: retryAfterSeconds is never reported as zero', () => {
+  const r = rateLimitedResponse(1);
+  assert.equal(r.retryAfterSeconds, 1);
 });
 
 await Promise.all(pending);

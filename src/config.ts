@@ -52,6 +52,16 @@ export const config = {
 
   // §ב2: auth tokens now expire instead of living forever.
   authTokenTtlDays: num('AUTH_TOKEN_TTL_DAYS', 30),
+
+  // §ב3: rate limiting on session creation and turn submission, protecting
+  // both the LLM API bill (mainly turnSubmit — each /say call is 1-2
+  // provider calls) and the service generally.
+  sessionCreateWindowMinutes: num('SESSION_CREATE_WINDOW_MINUTES', 5),
+  sessionCreateMaxPerUser: num('SESSION_CREATE_MAX_PER_USER', 30),
+  sessionCreateMaxPerIp: num('SESSION_CREATE_MAX_PER_IP', 90),
+  turnSubmitWindowMinutes: num('TURN_SUBMIT_WINDOW_MINUTES', 5),
+  turnSubmitMaxPerUser: num('TURN_SUBMIT_MAX_PER_USER', 30),
+  turnSubmitMaxPerIp: num('TURN_SUBMIT_MAX_PER_IP', 60),
 };
 
 export function assertProviderConfigured(): void {

@@ -15,6 +15,7 @@ import {
   updateSession,
 } from '../db.js';
 import { requireUser } from './auth.js';
+import { checkAndRecordRateLimit, rateLimitedResponse } from './rateLimit.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { parseTurn } from '../agent/parse.js';
 import {
@@ -61,6 +62,19 @@ sessionRouter.get('/state', (req, res) => {
   const uid = auth(req, res);
   if (uid === null) return;
 
+  const gate = checkAndRecordRateLimit(
+    'session_create',
+    `user:${uid}`,
+    `ip:${req.ip ?? 'unknown'}`,
+    config.sessionCreateWindowMinutes,
+    config.sessionCreateMaxPerUser,
+    config.sessionCreateMaxPerIp,
+  );
+  if (!gate.allowed) {
+    res.status(429).json(rateLimitedResponse(gate.retryAfterMs));
+    return;
+  }
+
   const until = lockoutUntil(uid);
   if (until) {
     res.json({ locked: true, until, now: Date.now() });
@@ -85,6 +99,21 @@ sessionRouter.get('/state', (req, res) => {
 sessionRouter.post('/say', async (req, res) => {
   const uid = auth(req, res);
   if (uid === null) return;
+
+  const gate = checkAndRecordRateLimit(
+    'turn_submit',
+    `user:${uid}`,
+    `ip:${req.ip ?? 'unknown'}`,
+    config.turnSubmitWindowMinutes,
+    config.turnSubmitMaxPerUser,
+    config.turnSubmitMaxPerIp,
+  );
+  if (!gate.allowed) {
+    // Plain and non-analytic on purpose (§ב3) — this must never look like
+    // a turn from the analyst, so it is never shaped as { say: ... }.
+    res.status(429).json(rateLimitedResponse(gate.retryAfterMs));
+    return;
+  }
 
   const until = lockoutUntil(uid);
   if (until) {
