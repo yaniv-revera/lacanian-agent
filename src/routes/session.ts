@@ -34,6 +34,7 @@ import {
   blockedSignifiers,
   isA14Excluded,
   isA15Excluded,
+  isExplicitCrisisLanguage,
   isFrameComplaint,
   isSessionOpeningTrigger,
   recordAnalystNote,
@@ -151,6 +152,7 @@ sessionRouter.post('/say', async (req, res) => {
   const userReportsRepetition = reportsRepetition(text);
   const userA14Excluded = isA14Excluded(text);
   const userA15Excluded = isA15Excluded(text);
+  const userExplicitCrisisLanguage = isExplicitCrisisLanguage(text);
 
   const system = buildSystemPrompt({
     ledger: { ...afterUser, session_count: s.session_index },
@@ -205,6 +207,7 @@ sessionRouter.post('/say', async (req, res) => {
         userReportsRepetition,
         userA14Excluded,
         userA15Excluded,
+        userExplicitCrisisLanguage,
       },
       async (reason) => {
         const retrySystem = {
@@ -217,14 +220,24 @@ sessionRouter.post('/say', async (req, res) => {
     if (retryResult.retried) {
       parsed = retryResult.parsed;
       if (!parsed.say) parsed.say = emptySayFallback(parsed.mode, config.crisisResources);
-      if (retryResult.substituted) {
+      if (retryResult.retryErrored && retryResult.reason) {
+        // The retry call itself failed (network/provider error), not a
+        // repeated violation. withDraftRetry has already substituted a safe
+        // fallback into retryResult.parsed — this flag is purely for human
+        // review, distinguishing "the safety net had to catch a transport
+        // failure" from an ordinary retry-still-violates outcome.
+        retryFailFlag = `retry_errored_safe_fallback_used:${retryFailureFlag(retryResult.reason)}`;
+      } else if (retryResult.substituted) {
         retryFailFlag = `minimal_form_substituted:${retryResult.substituted.from}->${retryResult.substituted.to}`;
       } else if (retryResult.retryFailed && retryResult.reason) {
         retryFailFlag = retryFailureFlag(retryResult.reason);
       }
     }
   } catch (err) {
-    console.error('[llm] draft retry failed, using original draft', err);
+    // withDraftRetry now handles a failed retry() call internally (finding
+    // 3) — this is a last-resort net for a genuinely unexpected error
+    // elsewhere in the pipeline, not the retry-call-failure path itself.
+    console.error('[llm] unexpected error in draft-retry pipeline, using original draft', err);
   }
 
   // 4. Enforce the frame. The model proposes; the server disposes.

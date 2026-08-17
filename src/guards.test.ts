@@ -33,6 +33,7 @@ import {
   isSessionOpeningTrigger,
   isA14Excluded,
   isA15Excluded,
+  isExplicitCrisisLanguage,
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
@@ -338,6 +339,7 @@ const RETRY_CTX_BASE: DraftRetryContext = {
   userReportsRepetition: false,
   userA14Excluded: false,
   userA15Excluded: false,
+  userExplicitCrisisLanguage: false,
 };
 
 t('decideDraftRetry is null on a short window', () => {
@@ -1352,6 +1354,198 @@ t('retryOverrideMessage and retryFailureFlag cover a14_excluded and a15_excluded
   assert.ok(retryOverrideMessage({ kind: 'a15_excluded' }).toUpperCase().includes('A15'));
   assert.equal(retryFailureFlag({ kind: 'a14_excluded' }), 'a14_excluded_retry_failed');
   assert.equal(retryFailureFlag({ kind: 'a15_excluded' }), 'a15_excluded_retry_failed');
+});
+
+// --- Adversarial round 3, finding 2: §1/§8 absolute rules as hard blocks, everywhere ---
+
+t('decideDraftRetry hard-blocks a claimed-feeling phrase (English)', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: 'I care about you.' }), RETRY_CTX_BASE);
+  assert.equal(r?.kind, 'claimed_feeling');
+});
+
+t('decideDraftRetry hard-blocks a claimed-feeling phrase with a simple intensifier', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: 'I really care about you.' }), RETRY_CTX_BASE);
+  assert.equal(r?.kind, 'claimed_feeling');
+});
+
+t('decideDraftRetry hard-blocks a claimed-feeling phrase (Hebrew)', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: 'אני דואג לך מאוד.' }), RETRY_CTX_BASE);
+  assert.equal(r?.kind, 'claimed_feeling');
+});
+
+t('decideDraftRetry does not block ordinary speech with no claimed feeling', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', say: 'You said "have to."' }), RETRY_CTX_BASE);
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry hard-blocks a number not in the configured crisis resources', () => {
+  const r = decideDraftRetry(
+    pt({ act: 'GATE', mode: 'GATE', say: 'Please call 555-0100 right now.' }),
+    RETRY_CTX_BASE,
+  );
+  assert.equal(r?.kind, 'invented_number');
+});
+
+t('decideDraftRetry does not block a number verbatim in the configured crisis resources', () => {
+  const original = config.crisisResources;
+  config.crisisResources = 'Israel: ERAN 1201 | International: 555-123-4567.';
+  try {
+    const r = decideDraftRetry(
+      pt({ act: 'GATE', mode: 'GATE', say: 'Please call 555-123-4567 now.' }),
+      RETRY_CTX_BASE,
+    );
+    assert.equal(r, null);
+  } finally {
+    config.crisisResources = original;
+  }
+});
+
+t('claimed_feeling and invented_number fire even in GATE, ANCHORED, and required speech — unlike every other reason', () => {
+  assert.deepEqual(
+    decideDraftRetry(pt({ act: 'GATE', mode: 'GATE', say: 'I care about you.' }), RETRY_CTX_BASE),
+    { kind: 'claimed_feeling', phrase: 'I care' },
+  );
+  assert.equal(
+    decideDraftRetry(pt({ act: 'ANCHORED', mode: 'ANCHORED', say: 'I understand what you mean.' }), RETRY_CTX_BASE)
+      ?.kind,
+    'claimed_feeling',
+  );
+  assert.equal(
+    decideDraftRetry(pt({ act: 'A20', say: 'I feel for you, but I do not know.' }), RETRY_CTX_BASE)?.kind,
+    'claimed_feeling',
+  );
+});
+
+t('retryOverrideMessage and retryFailureFlag cover claimed_feeling and invented_number', () => {
+  assert.ok(retryOverrideMessage({ kind: 'claimed_feeling', phrase: 'I care' }).includes('§1'));
+  assert.ok(retryOverrideMessage({ kind: 'invented_number', number: '555-0100' }).includes('555-0100'));
+  assert.equal(retryFailureFlag({ kind: 'claimed_feeling', phrase: 'I care' }), 'claimed_feeling_retry_failed:I care');
+  assert.equal(retryFailureFlag({ kind: 'invented_number', number: '555-0100' }), 'invented_number_retry_failed:555-0100');
+});
+
+// --- Adversarial round 3, finding 3: a retry-call failure never serves the flagged original ---
+
+at('withDraftRetry substitutes a safe fallback, never the flagged original, when the retry call itself throws', async () => {
+  const result = await withDraftRetry(
+    pt({ act: 'A1', say: 'Hm.' }),
+    '<work>act: A1</work><say>Hm.</say>',
+    { ...RETRY_CTX_BASE, userReportsRepetition: true },
+    async () => {
+      throw new Error('network blip');
+    },
+  );
+  assert.equal(result.retried, true);
+  assert.equal(result.retryErrored, true);
+  assert.equal(result.retryFailed, true);
+  assert.equal(result.reason?.kind, 'reports_repetition');
+  assert.notEqual(result.parsed.say, 'Hm.');
+  assert.equal(result.parsed.say, 'Go on.');
+});
+
+at('the retryErrored fallback is GATE-appropriate, not "Go on.", for a GATE-mode hard block', async () => {
+  const result = await withDraftRetry(
+    pt({ act: 'GATE', mode: 'GATE', say: 'I really do care about you and I am here for you.' }),
+    '<work>gate: suicidal ideation\nact: GATE</work><say>I really do care about you and I am here for you.</say>',
+    RETRY_CTX_BASE,
+    async () => {
+      throw new Error('network blip');
+    },
+  );
+  assert.equal(result.reason?.kind, 'claimed_feeling');
+  assert.notEqual(result.parsed.say, 'Go on.');
+  assert.ok(result.parsed.say.toLowerCase().includes('machine'));
+});
+
+at('withDraftRetry still reports retryErrored: false on the ordinary successful-retry path', async () => {
+  const result = await withDraftRetry(
+    pt({ act: 'A2' }),
+    '<work>act: A2</work><say>x</say>',
+    { ...RETRY_CTX_BASE, recentActs: ['A2', 'A2'] },
+    async () => '<work>act: A3</work><say>You said "have to."</say>',
+  );
+  assert.equal(result.retryErrored, false);
+  assert.equal(result.retryFailed, false);
+});
+
+// --- Adversarial round 3, finding 4: a best-effort backstop for explicit, already-named crisis language ---
+
+t('isExplicitCrisisLanguage recognises phrases §8 names verbatim (English)', () => {
+  assert.equal(isExplicitCrisisLanguage('Nobody would miss me.'), true);
+  assert.equal(isExplicitCrisisLanguage("They'd be better off without me."), true);
+  assert.equal(isExplicitCrisisLanguage("I've been thinking about how to kill myself."), true);
+});
+
+t('isExplicitCrisisLanguage recognises Hebrew equivalents', () => {
+  assert.equal(isExplicitCrisisLanguage('אף אחד לא יתגעגע אליי.'), true);
+  assert.equal(isExplicitCrisisLanguage('אני חושב על להתאבד.'), true);
+});
+
+t('isExplicitCrisisLanguage is false for ordinary material, including the oblique presentation it cannot catch', () => {
+  assert.equal(isExplicitCrisisLanguage("I've been putting my affairs in order this week."), false);
+  assert.equal(isExplicitCrisisLanguage('It was a hard day at work.'), false);
+});
+
+t('decideDraftRetry hard-blocks any non-GATE turn when explicit crisis language is present', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', mode: 'ANALYTIC', say: 'You said "burden."' }), {
+    ...RETRY_CTX_BASE,
+    userExplicitCrisisLanguage: true,
+  });
+  assert.deepEqual(r, { kind: 'possible_missed_gate' });
+});
+
+t('decideDraftRetry does not block an actual GATE turn even with explicit crisis language present', () => {
+  const r = decideDraftRetry(
+    pt({ act: 'GATE', mode: 'GATE', say: 'I want to be direct with you.' }),
+    { ...RETRY_CTX_BASE, userExplicitCrisisLanguage: true },
+  );
+  assert.equal(r, null);
+});
+
+t('possible_missed_gate outranks everything, including ANCHORED and required speech', () => {
+  assert.deepEqual(
+    decideDraftRetry(pt({ act: 'ANCHORED', mode: 'ANCHORED' }), {
+      ...RETRY_CTX_BASE,
+      userExplicitCrisisLanguage: true,
+    }),
+    { kind: 'possible_missed_gate' },
+  );
+  assert.deepEqual(
+    decideDraftRetry(pt({ act: 'A20' }), { ...RETRY_CTX_BASE, userExplicitCrisisLanguage: true }),
+    { kind: 'possible_missed_gate' },
+  );
+});
+
+t('retryOverrideMessage and retryFailureFlag cover possible_missed_gate', () => {
+  assert.ok(retryOverrideMessage({ kind: 'possible_missed_gate' }).includes('§8'));
+  assert.equal(retryFailureFlag({ kind: 'possible_missed_gate' }), 'possible_missed_gate_retry_failed');
+});
+
+at(
+  'withDraftRetry accepts and flags, never fabricating gate content itself, when the model still declines on retry',
+  async () => {
+    const result = await withDraftRetry(
+      pt({ act: 'A3', mode: 'ANALYTIC', say: 'You said "burden."' }),
+      '<work>act: A3</work><say>You said "burden."</say>',
+      { ...RETRY_CTX_BASE, userExplicitCrisisLanguage: true },
+      async () => '<work>gate: none\nmode: ANALYTIC\nact: A1</work><say>Go on.</say>',
+    );
+    assert.equal(result.retried, true);
+    assert.equal(result.retryFailed, true);
+    assert.equal(result.reason?.kind, 'possible_missed_gate');
+    assert.equal(result.parsed.say, 'Go on.');
+  },
+);
+
+at('withDraftRetry accepts the retried GATE turn cleanly when the model reconsiders correctly', async () => {
+  const result = await withDraftRetry(
+    pt({ act: 'A3', mode: 'ANALYTIC', say: 'You said "burden."' }),
+    '<work>act: A3</work><say>You said "burden."</say>',
+    { ...RETRY_CTX_BASE, userExplicitCrisisLanguage: true },
+    async () =>
+      '<work>gate: worthlessness/burdensomeness\nact: GATE</work><say>I want to stop and be direct with you.</say>',
+  );
+  assert.equal(result.retryFailed, false);
+  assert.equal(result.parsed.mode, 'GATE');
 });
 
 await Promise.all(pending);

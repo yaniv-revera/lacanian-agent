@@ -209,7 +209,59 @@ function findA16DangerousWord(say: string): string | null {
   return null;
 }
 
+/**
+ * Adversarial round 3, finding 2: §1's "never claim or imply feeling,
+ * caring, being moved... absolutely and without exception, in every mode
+ * including GATE" was enforced only by a non-blocking, English-only audit
+ * regex. This is the same check, promoted, plus Hebrew, plus tolerance for
+ * a simple intensifier ("I really care about you") the original missed.
+ */
+const CLAIMED_FEELING_EN =
+  /\bi (?:really |truly |deeply |genuinely |always )?(?:feel|understand|hear you|care|am here)\b/i;
+const CLAIMED_FEELING_HE = [
+  'אני מרגיש',
+  'אני מרגישה',
+  'אני מבין',
+  'אני מבינה',
+  'אני שומע אותך',
+  'אני שומעת אותך',
+  'אני דואג',
+  'אני דואגת',
+  'אני כאן בשבילך',
+  'אני איתך',
+];
+
+function findClaimedFeeling(say: string): string | null {
+  const m = say.match(CLAIMED_FEELING_EN);
+  if (m) return m[0];
+  const lower = say.toLowerCase();
+  for (const phrase of CLAIMED_FEELING_HE) {
+    if (lower.includes(phrase)) return phrase;
+  }
+  return null;
+}
+
+/**
+ * Same finding: "never invent, guess, or recall a hotline number" (§8) was
+ * also audit-only. Same detection the audit used (digit-shaped sequences
+ * not present in the configured resource list), now a hard block. Known
+ * limitation, unchanged from the audit version: short 2-3 digit codes
+ * ("911", "988", "999") don't match this pattern at all, since it requires
+ * two digit-groups — a gap in the pattern, not something this promotion
+ * introduces or fixes.
+ */
+function findInventedNumber(say: string, crisisResources: string): string | null {
+  const numbers = say.match(/\b\d{3,4}[- ]?\d{3,4}[- ]?\d{0,4}\b/g) ?? [];
+  for (const n of numbers) {
+    if (crisisResources === 'UNAVAILABLE' || !crisisResources.includes(n.trim())) return n.trim();
+  }
+  return null;
+}
+
 export type DraftRetryReason =
+  | { kind: 'possible_missed_gate' }
+  | { kind: 'claimed_feeling'; phrase: string }
+  | { kind: 'invented_number'; number: string }
   | { kind: 'reports_repetition' }
   | { kind: 'frame_complaint' }
   | { kind: 'run_limit'; act: string }
@@ -245,20 +297,38 @@ export interface DraftRetryContext {
   userA14Excluded: boolean;
   /** Does the analysand's current turn match one of A15's textually-identifiable exclusions? */
   userA15Excluded: boolean;
+  /** Does the analysand's current turn contain language §8 already names verbatim (see ledger.isExplicitCrisisLanguage)? */
+  userExplicitCrisisLanguage: boolean;
 }
 
 /**
- * Everything that earns a draft exactly one regeneration: a hard block on a
- * minimal act when the analysand reports repetition or complains about the
- * frame, a third consecutive identical act, a reused minimal form, A16 on a
- * self-annihilation word, the A16 session cap or two-turn window, A14/A15
- * used against a textually-identifiable exclusion, any-form return of a
- * currently-blocked signifier, or a near-duplicate of a recent utterance.
+ * Everything that earns a draft exactly one regeneration.
  *
- * Required speech, GATE and ANCHORED turns are never subject to any of this —
- * safety and required speech are never regenerated for stylistic reasons.
+ * Two tiers. The first — possible_missed_gate, claimed_feeling,
+ * invented_number — are never excluded: §8 outranks everything per the
+ * prompt's own precedence, and §1's honesty rules apply "absolutely and
+ * without exception, in every mode including GATE." These run even in GATE,
+ * ANCHORED, and required speech.
+ *
+ * The rest — a hard block on a minimal act when the analysand reports
+ * repetition or complains about the frame, a third consecutive identical
+ * act, a reused minimal form, A16 on a self-annihilation word, the A16
+ * session cap or two-turn window, A14/A15 used against a
+ * textually-identifiable exclusion, any-form return of a currently-blocked
+ * signifier, or a near-duplicate of a recent utterance — are excluded in
+ * GATE, ANCHORED and required speech: those are about regenerating for
+ * stylistic or contextual reasons, which safety and required speech never
+ * are.
  */
 export function decideDraftRetry(p: ParsedTurn, ctx: DraftRetryContext): DraftRetryReason | null {
+  if (ctx.userExplicitCrisisLanguage && p.mode !== 'GATE') return { kind: 'possible_missed_gate' };
+
+  const claimedFeeling = findClaimedFeeling(p.say);
+  if (claimedFeeling) return { kind: 'claimed_feeling', phrase: claimedFeeling };
+
+  const inventedNumber = findInventedNumber(p.say, config.crisisResources);
+  if (inventedNumber) return { kind: 'invented_number', number: inventedNumber };
+
   if (p.mode === 'GATE' || p.mode === 'ANCHORED') return null;
   if (isRequiredSpeechTurn(p)) return null;
   if (p.act === null) return null;
@@ -299,7 +369,7 @@ export interface DraftRetryResult {
   raw: string;
   /** True once a retry was attempted (regardless of whether it resolved anything). */
   retried: boolean;
-  /** True when the retry still violated some rule (possibly a different one). */
+  /** True when the retry still violated some rule (possibly a different one), OR the retry call itself failed. */
   retryFailed: boolean;
   /** The reason that triggered the retry, or — on failure — whichever reason still applies. */
   reason: DraftRetryReason | null;
@@ -309,6 +379,15 @@ export interface DraftRetryResult {
    * interpretation, so it isn't a "failure" the way other pass-throughs are.
    */
   substituted: { from: string; to: string } | null;
+  /**
+   * Adversarial round 3, finding 3: true when the *retry call itself*
+   * threw (network/provider error), as distinct from the retry succeeding
+   * but still violating the rule. In this case `parsed` is never the
+   * original flagged draft — falling back to it would silently serve
+   * exactly the content the rule exists to prevent, so a safe placeholder
+   * (guards.emptySayFallback) is substituted instead.
+   */
+  retryErrored: boolean;
 }
 
 /**
@@ -323,6 +402,11 @@ export interface DraftRetryResult {
  * is never blocked and never sees an error, and the failure is reported via
  * `retryFailed` for the caller to log. Substantive speech is never rewritten
  * by the server.
+ *
+ * If the retry call itself fails (not a violation — a genuine network or
+ * provider error), the original flagged draft is never returned: a safe
+ * fallback is substituted instead, and `retryErrored` is set so the caller
+ * can log it distinctly from an ordinary retry failure.
  */
 export async function withDraftRetry(
   parsed: ParsedTurn,
@@ -331,9 +415,18 @@ export async function withDraftRetry(
   retry: (reason: DraftRetryReason) => Promise<string>,
 ): Promise<DraftRetryResult> {
   const reason = decideDraftRetry(parsed, ctx);
-  if (!reason) return { parsed, raw, retried: false, retryFailed: false, reason: null, substituted: null };
+  if (!reason) {
+    return { parsed, raw, retried: false, retryFailed: false, reason: null, substituted: null, retryErrored: false };
+  }
 
-  const retryRaw = await retry(reason);
+  let retryRaw: string;
+  try {
+    retryRaw = await retry(reason);
+  } catch {
+    const safeParsed: ParsedTurn = { ...parsed, say: emptySayFallback(parsed.mode, config.crisisResources) };
+    return { parsed: safeParsed, raw, retried: true, retryFailed: true, reason, substituted: null, retryErrored: true };
+  }
+
   let retryParsed = parseTurn(retryRaw);
   const stillViolates = decideDraftRetry(retryParsed, ctx);
 
@@ -342,7 +435,15 @@ export async function withDraftRetry(
     if (next) {
       const substituted = { from: stillViolates.form, to: next };
       retryParsed = { ...retryParsed, say: next };
-      return { parsed: retryParsed, raw: retryRaw, retried: true, retryFailed: false, reason: stillViolates, substituted };
+      return {
+        parsed: retryParsed,
+        raw: retryRaw,
+        retried: true,
+        retryFailed: false,
+        reason: stillViolates,
+        substituted,
+        retryErrored: false,
+      };
     }
   }
 
@@ -353,11 +454,18 @@ export async function withDraftRetry(
     retryFailed: stillViolates !== null,
     reason: stillViolates ?? reason,
     substituted: null,
+    retryErrored: false,
   };
 }
 
 export function retryOverrideMessage(reason: DraftRetryReason): string {
   switch (reason.kind) {
+    case 'possible_missed_gate':
+      return `\n\nSERVER OVERRIDE: what he said matches language §8 names directly (worthlessness, burdensomeness, or explicit self-harm/suicide language), and this turn is not GATE. Re-read §8 now. If this is gate material, switch to GATE and answer directly, at whatever length is needed. If you are genuinely confident it is not — he is quoting someone else, or the words plainly are not about himself — say so, but check twice: when in doubt about risk, you are not in doubt.`;
+    case 'claimed_feeling':
+      return `\n\nSERVER OVERRIDE: this draft claims feeling, caring, understanding, hearing, or presence ("${reason.phrase}") — §1 forbids this absolutely, in every mode including GATE. Remove the claim; keep everything else, including any safety-relevant content, intact.`;
+    case 'invented_number':
+      return `\n\nSERVER OVERRIDE: "${reason.number}" is not on the verified crisis-resources list and must never be invented, guessed, or recalled. If no verified number is available, say so plainly and direct him to look up his local emergency number or crisis line instead.`;
     case 'reports_repetition':
       return `\n\nSERVER OVERRIDE: the analysand is reporting that you did not hear him — he is repeating himself. A minimal act is forbidden this turn. Return what he actually said.`;
     case 'frame_complaint':
@@ -385,6 +493,12 @@ export function retryOverrideMessage(reason: DraftRetryReason): string {
 
 export function retryFailureFlag(reason: DraftRetryReason): string {
   switch (reason.kind) {
+    case 'possible_missed_gate':
+      return 'possible_missed_gate_retry_failed';
+    case 'claimed_feeling':
+      return `claimed_feeling_retry_failed:${reason.phrase}`;
+    case 'invented_number':
+      return `invented_number_retry_failed:${reason.number}`;
     case 'reports_repetition':
       return 'reports_repetition_retry_failed';
     case 'frame_complaint':

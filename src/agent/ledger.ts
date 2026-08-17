@@ -732,6 +732,58 @@ export function isA15Excluded(text: string): boolean {
 }
 
 /**
+ * Adversarial round 3, finding 4: gate detection has NO independent
+ * server-side check at all — entirely dependent on the model's own
+ * self-labeled gate:/mode: fields.
+ *
+ * This is a best-effort backstop for language §8 already names verbatim
+ * (worthlessness/burdensomeness phrases, explicit self-harm/suicide terms).
+ * It does NOT and CANNOT catch oblique presentation — giving away
+ * possessions, sudden calm after prolonged distress, indirect
+ * medical-emergency language. That remains entirely dependent on the
+ * model's own reading; no keyword list substitutes for it. This function
+ * only detects; it never decides gate should fire and never authors gate
+ * content — see guards.decideDraftRetry's 'possible_missed_gate', which
+ * asks the model to reconsider once and, if it still declines, accepts the
+ * turn and flags it for human review rather than fabricating a response.
+ */
+const EXPLICIT_CRISIS_EN = [
+  /\bnobody would miss me\b/i,
+  /\bno one would miss me\b/i,
+  /\bthey'?d be better off without me\b/i,
+  /\bi'?m a burden\b/i,
+  /\bi don'?t deserve to live\b/i,
+  /\bthere'?s no point\b/i,
+  /\bkill myself\b/i,
+  /\bend my life\b/i,
+  /\bsuicid(?:e|al)\b/i,
+  /\bhurt myself\b/i,
+  /\bwant to die\b/i,
+  /\bdon'?t want to (?:be alive|live anymore)\b/i,
+];
+
+const EXPLICIT_CRISIS_HE = [
+  'אף אחד לא יתגעגע אליי',
+  'יהיה להם יותר טוב בלעדיי',
+  'אני נטל',
+  'לא מגיע לי לחיות',
+  'אין טעם',
+  'אין שום טעם',
+  'להתאבד',
+  'התאבדות',
+  'לשים קץ לחיים',
+  'לפגוע בעצמי',
+  'רוצה למות',
+  'לא רוצה לחיות יותר',
+];
+
+export function isExplicitCrisisLanguage(text: string): boolean {
+  if (EXPLICIT_CRISIS_EN.some((p) => p.test(text))) return true;
+  const lower = text.toLowerCase();
+  return EXPLICIT_CRISIS_HE.some((phrase) => lower.includes(phrase));
+}
+
+/**
  * The UI sends this exact text as turn 1 to nudge the analyst's unprompted
  * opening (§2) — it is a stage direction, not analysand speech, and must
  * never feed the ledger, assent tracking, or any other analysand-turn
