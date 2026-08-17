@@ -273,6 +273,14 @@ export function recentActs(sessionId: number, limit: number): string[] {
   return rows.map((r) => String(r.act));
 }
 
+/** Full-session count of a given act, not bounded by the recent-acts window. */
+export function countAct(sessionId: number, act: string): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS c FROM turns WHERE session_id = ? AND role = 'analyst' AND act = ?`)
+    .get(sessionId, act) as { c: number };
+  return Number(row.c);
+}
+
 /** Full transcript for human review, including the internal work block. */
 export function sessionTranscript(sessionId: number): Record<string, unknown>[] {
   return db

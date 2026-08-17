@@ -21,6 +21,11 @@ export interface PromptVars {
   gateLatched: boolean;
   challengeActsLast5: number;
   consecutiveMinimalActs: number;
+  a16CountThisSession: number;
+  a16Cap: number;
+  /** Terms currently off-limits in any form — see ledger.blockedSignifiers. */
+  blockedSignifiers: string[];
+  assentCountLast5: number;
   endPermitted: boolean;
 }
 
@@ -55,6 +60,20 @@ function renderLedger(l: Ledger): string {
 
 const LEDGER_HEADING = '## 10. Ledger';
 
+function renderBlockedSignifiers(terms: string[]): string {
+  return terms.length ? terms.join(', ') : 'none';
+}
+
+/** Empty unless the 3-of-5 threshold is met — this is a live warning, not a standing counter. */
+function renderAssentWarning(assentCountLast5: number): string {
+  if (assentCountLast5 < 3) return '';
+  return (
+    `\n\nASSENT PATTERN: ${assentCountLast5} of the analysand's last 5 replies were assent ` +
+    `("כן" / "נכון" / a bare restatement), not new material. Returning a signifier here produces ` +
+    `confirmation, not speech. The position requires a different act — not a louder echo.`
+  );
+}
+
 /**
  * Split into a stable prefix and a volatile tail.
  *
@@ -78,6 +97,10 @@ export function buildSystemPrompt(v: PromptVars): { stable: string; volatile: st
     .replace('{{GATE_LATCHED}}', v.gateLatched ? 'true' : 'false')
     .replace('{{CHALLENGE_ACTS_LAST_5}}', String(v.challengeActsLast5))
     .replace('{{CONSECUTIVE_MINIMAL_ACTS}}', String(v.consecutiveMinimalActs))
+    .replace('{{A16_COUNT}}', String(v.a16CountThisSession))
+    .replace('{{A16_CAP}}', String(v.a16Cap))
+    .replace('{{ECHOED_SIGNIFIERS}}', renderBlockedSignifiers(v.blockedSignifiers))
+    .replace('{{ASSENT_WARNING}}', renderAssentWarning(v.assentCountLast5))
     .replace(
       '{{END_PERMITTED}}',
       v.endPermitted ? 'yes' : 'no — do not emit <end/>, it will be refused',

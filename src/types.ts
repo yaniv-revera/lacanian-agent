@@ -43,6 +43,12 @@ export interface SpecificNegation {
   substituted_by_agent: boolean;
 }
 
+export interface EchoedSignifier {
+  term: string;
+  /** The turn this term was most recently returned by the analyst, in any form. */
+  turn: number;
+}
+
 export interface Ledger {
   session_count: number;
   signifiers: SignifierEntry[];
@@ -54,6 +60,13 @@ export interface Ledger {
   specific_negations: SpecificNegation[];
   transference_markers: { session: number; turn: number; text: string; addressed: boolean }[];
   held_back: { observation: string; reason_held: string }[];
+  /**
+   * Normalised terms already returned via A16 this session, with the turn of
+   * their most recent occurrence. Never returned again in any form — bare,
+   * glossed, translated, or quoted — until at least 5 analyst turns have
+   * passed AND the analysand has reintroduced the term himself since.
+   */
+  echoed_signifiers: EchoedSignifier[];
 }
 
 export function emptyLedger(): Ledger {
@@ -68,6 +81,7 @@ export function emptyLedger(): Ledger {
     specific_negations: [],
     transference_markers: [],
     held_back: [],
+    echoed_signifiers: [],
   };
 }
 

@@ -22,6 +22,7 @@ export const config = {
   lockoutHours: num('LOCKOUT_HOURS', 24),
   minTurnsBeforeEnd: num('MIN_TURNS_BEFORE_END', 15),
   maxTurns: num('MAX_TURNS', 40),
+  maxA16PerSession: num('MAX_A16_PER_SESSION', 3),
 
   crisisResources: process.env.CRISIS_RESOURCES?.trim() || 'UNAVAILABLE',
 

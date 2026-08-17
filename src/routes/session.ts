@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { config } from '../config.js';
 import {
   appendTurn,
+  countAct,
   getLedger,
   getSession,
   lockoutUntil,
@@ -21,10 +22,18 @@ import {
   consecutiveMinimalActs,
   evaluateEnd,
   isChallengeAct,
+  retryFailureFlag,
+  retryOverrideMessage,
   shouldLock,
-  withRunLimitRetry,
+  withDraftRetry,
 } from '../agent/guards.js';
-import { recordAnalystNote, updateLedgerFromUser } from '../agent/ledger.js';
+import {
+  assentRunStats,
+  blockedSignifiers,
+  recordAnalystNote,
+  recordEchoedSignifier,
+  updateLedgerFromUser,
+} from '../agent/ledger.js';
 import { getProvider, type ChatMessage } from '../llm/index.js';
 
 export const sessionRouter = Router();
@@ -99,8 +108,25 @@ sessionRouter.post('/say', async (req, res) => {
 
   // 2. Build the position.
   const acts = recentActs(s.id, 5);
+  const allTurns = sessionTurns(s.id);
   const endPermitted =
     !s.gate_latched && nextIdx >= config.minTurnsBeforeEnd && acts[0] !== 'A16';
+
+  const userTurns = allTurns.filter((t) => t.role === 'user');
+  const assentCountLast5 = assentRunStats(userTurns.map((t) => t.text)).count;
+
+  const recentAnalystUtterances = allTurns
+    .filter((t) => t.role === 'analyst')
+    .map((t) => t.text)
+    .slice(-3);
+
+  const a16CountThisSession = countAct(s.id, 'A16');
+
+  const blocked = blockedSignifiers(
+    afterUser.echoed_signifiers,
+    nextIdx,
+    userTurns.map((t) => ({ idx: t.idx, text: t.text })),
+  );
 
   const system = buildSystemPrompt({
     ledger: { ...afterUser, session_count: s.session_index },
@@ -109,10 +135,14 @@ sessionRouter.post('/say', async (req, res) => {
     gateLatched: !!s.gate_latched,
     challengeActsLast5: acts.filter(isChallengeAct).length,
     consecutiveMinimalActs: consecutiveMinimalActs(acts),
+    a16CountThisSession,
+    a16Cap: config.maxA16PerSession,
+    blockedSignifiers: blocked,
+    assentCountLast5,
     endPermitted,
   });
 
-  const history: ChatMessage[] = sessionTurns(s.id).map((t) => ({
+  const history: ChatMessage[] = allTurns.map((t) => ({
     role: t.role === 'user' ? 'user' : 'assistant',
     content: t.text,
   }));
@@ -130,26 +160,36 @@ sessionRouter.post('/say', async (req, res) => {
   let parsed = parseTurn(raw);
   if (!parsed.say) parsed.say = 'Go on.';
 
-  // 3b. Run-limit enforcement: a third consecutive identical act gets one
-  // regeneration. Safety and required speech are never regenerated for this.
-  let runLimitRetryFailedAct: string | null = null;
+  // 3b. Draft-retry enforcement: a run limit, the A16 cap/window, a blocked
+  // signifier returned in any form, or a near-duplicate utterance each get
+  // exactly one regeneration. Safety and required speech are never
+  // regenerated for this.
+  let retryFailFlag: string | null = null;
   try {
-    const retryResult = await withRunLimitRetry(parsed, raw, acts, async (forbiddenAct) => {
-      const retrySystem = {
-        stable: system.stable,
-        volatile:
-          system.volatile +
-          `\n\nSERVER OVERRIDE: ${forbiddenAct} would be the third consecutive identical act this turn. ${forbiddenAct} is forbidden — choose a different act, or A20.`,
-      };
-      return getProvider().complete(retrySystem, history);
-    });
+    const retryResult = await withDraftRetry(
+      parsed,
+      raw,
+      {
+        recentActs: acts,
+        a16CountThisSession,
+        blockedSignifiers: blocked,
+        recentAnalystUtterances,
+      },
+      async (reason) => {
+        const retrySystem = {
+          stable: system.stable,
+          volatile: system.volatile + retryOverrideMessage(reason),
+        };
+        return getProvider().complete(retrySystem, history);
+      },
+    );
     if (retryResult.retried) {
       parsed = retryResult.parsed;
       if (!parsed.say) parsed.say = 'Go on.';
-      if (retryResult.retryFailed) runLimitRetryFailedAct = retryResult.forbiddenAct;
+      if (retryResult.retryFailed && retryResult.reason) retryFailFlag = retryFailureFlag(retryResult.reason);
     }
   } catch (err) {
-    console.error('[llm] run-limit retry failed, using original draft', err);
+    console.error('[llm] draft retry failed, using original draft', err);
   }
 
   // 4. Enforce the frame. The model proposes; the server disposes.
@@ -161,16 +201,27 @@ sessionRouter.post('/say', async (req, res) => {
     mode: parsed.mode,
   });
 
-  const flags = auditTurn(parsed, { recentActs: acts, mode: parsed.mode, turnCount: nextIdx });
+  const flags = auditTurn(parsed, {
+    recentActs: acts,
+    mode: parsed.mode,
+    turnCount: nextIdx,
+    assentCountLast5,
+  });
   if (parsed.wantsEnd && !decision.allowed) flags.push(`end_refused:${decision.reason}`);
   if (desupposition) flags.push('desupposition_by_user');
-  if (runLimitRetryFailedAct) flags.push(`run_limit_retry_failed:${runLimitRetryFailedAct}`);
+  if (retryFailFlag) flags.push(retryFailFlag);
   if (flags.length) console.error(`[audit s${s.id} t${nextIdx}]`, flags.join(' '));
 
   const workLog = [parsed.work, flags.length ? `\n[server flags] ${flags.join(' ')}` : ''].join('');
   appendTurn(s.id, nextIdx, 'analyst', parsed.say, workLog, parsed.act ?? undefined);
 
-  saveLedger(uid, recordAnalystNote({ ...afterUser, session_count: s.session_index }, parsed.ledgerNote));
+  const ledgerAfterAnalyst = recordEchoedSignifier(
+    recordAnalystNote({ ...afterUser, session_count: s.session_index }, parsed.ledgerNote),
+    parsed.act,
+    parsed.say,
+    nextIdx,
+  );
+  saveLedger(uid, ledgerAfterAnalyst);
   updateSession(s.id, {
     turn_count: nextIdx,
     gate_latched: gateLatched ? 1 : 0,

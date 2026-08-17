@@ -1,4 +1,4 @@
-import type { Ledger } from '../types.js';
+import type { EchoedSignifier, Ledger } from '../types.js';
 
 /**
  * Deterministic listening support. This does not replace the model's reading —
@@ -7,7 +7,7 @@ import type { Ledger } from '../types.js';
  * be silently substituted.
  */
 
-const STOP = new Set(
+export const STOP = new Set(
   `a an the and or but if then than that this these those i me my mine you your yours he him his she her
    it its we us our they them their am is are was were be been being do does did done have has had will
    would can could should shall may might must of in on at to for with from by about as so just really
@@ -183,4 +183,138 @@ export function recordAnalystNote(ledger: Ledger, note: string | null): Ledger {
   l.held_back.push({ observation: note.slice(0, 400), reason_held: 'model note' });
   l.held_back = l.held_back.slice(-20);
   return l;
+}
+
+/**
+ * A16 returns a signifier alone and stops. Once a term has been returned this
+ * way, returning it again in any form — bare, glossed, translated, or quoted
+ * — trains a confirm-reflex, not something new. `normalizeEchoedSignifier`
+ * extracts the bare term when the whole utterance IS the term (the
+ * well-formed A16 case, used to detect a genuinely new signifier).
+ */
+export function normalizeEchoedSignifier(say: string): string {
+  return say
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .replace(/[.!?,;:׃…]+$/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Records a newly bare-echoed A16 term, and re-stamps the turn of any
+ * already-known term that reappears in `say` in ANY form (bare, glossed,
+ * translated as a quoted original, or otherwise) — the cooldown restarts
+ * from the most recent occurrence, regardless of which act produced it.
+ */
+export function recordEchoedSignifier(
+  ledger: Ledger,
+  act: string | null,
+  say: string,
+  turn: number,
+): Ledger {
+  const lowerSay = say.toLowerCase();
+  let touched = false;
+  const echoed = ledger.echoed_signifiers.map((e) => {
+    if (lowerSay.includes(e.term)) {
+      touched = true;
+      return { ...e, turn };
+    }
+    return e;
+  });
+
+  if (act === 'A16') {
+    const term = normalizeEchoedSignifier(say);
+    if (term && !echoed.some((e) => e.term === term)) {
+      echoed.push({ term, turn });
+      touched = true;
+    }
+  }
+
+  if (!touched) return ledger;
+  const l: Ledger = structuredClone(ledger);
+  l.echoed_signifiers = echoed.slice(-100);
+  return l;
+}
+
+/**
+ * Terms still off-limits this turn: inside the 5-analyst-turn cooldown since
+ * their most recent occurrence, or past it but never reintroduced by the
+ * analysand himself since. `userTurns` need only cover turns after the
+ * earliest echo turn present.
+ */
+export function blockedSignifiers(
+  echoed: EchoedSignifier[],
+  currentTurn: number,
+  userTurns: { idx: number; text: string }[],
+): string[] {
+  return echoed
+    .filter((e) => {
+      const turnsSinceEcho = currentTurn - e.turn;
+      if (turnsSinceEcho < 5) return true;
+      const reintroduced = userTurns.some(
+        (t) => t.idx > e.turn && t.text.toLowerCase().includes(e.term),
+      );
+      return !reintroduced;
+    })
+    .map((e) => e.term);
+}
+
+/**
+ * Assent detection: a session can contract into a confirm-reflex without any
+ * single guard firing, because the repeated act is not the analyst's — it is
+ * the analysand's collapsing replies. Language-agnostic (Hebrew and English
+ * both matter here); no stopword list exists for Hebrew, so every Hebrew word
+ * counts as a content word.
+ */
+const ASSENT_TOKENS = ['לא נכון', 'כן', 'נכון', 'בדיוק', 'אכן', 'yes', 'right', 'correct', 'exactly', 'true'];
+
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().match(/[\p{L}\p{M}']{2,}/gu) ?? [];
+}
+
+function opensWithAssentToken(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return ASSENT_TOKENS.some((tok) => {
+    const tl = tok.toLowerCase();
+    if (t === tl) return true;
+    if (!t.startsWith(tl)) return false;
+    const next = t[tl.length];
+    return next === undefined || /[\s,.!?;:־׃]/.test(next);
+  });
+}
+
+/**
+ * A reply counts as assent if it opens with an assent token, or is four
+ * words or fewer with no content word absent from what was already said.
+ * An empty content-word set (a purely functional reply) vacuously satisfies
+ * "no new content word" — that is the correct reading, not a bug: there is
+ * no word to be new.
+ */
+export function isAssentReply(text: string, priorContentWords: Set<string>): boolean {
+  if (opensWithAssentToken(text)) return true;
+  const words = wordsOf(text);
+  if (words.length > 4) return false;
+  const contentWords = words.filter((w) => !STOP.has(w));
+  return contentWords.every((w) => priorContentWords.has(w));
+}
+
+export interface AssentRunStats {
+  /** Assent classification of the given texts, oldest to newest, last 5 only. */
+  last5: boolean[];
+  count: number;
+}
+
+/** `userTexts` is the full session's analysand turns, oldest first. */
+export function assentRunStats(userTexts: string[]): AssentRunStats {
+  const seen = new Set<string>();
+  const flags: boolean[] = [];
+  for (const text of userTexts) {
+    flags.push(isAssentReply(text, seen));
+    for (const w of wordsOf(text)) {
+      if (!STOP.has(w)) seen.add(w);
+    }
+  }
+  const last5 = flags.slice(-5);
+  return { last5, count: last5.filter(Boolean).length };
 }
