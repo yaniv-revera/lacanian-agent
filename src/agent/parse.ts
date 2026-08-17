@@ -29,6 +29,41 @@ function fields(work: string, key: string): string[] {
 }
 
 /**
+ * Adversarial round 3, finding 7: `heard:` and `ledger:` are the only
+ * fields the model is instructed to quote the analysand's own words into
+ * VERBATIM (Rule 1). An analysand can embed a newline followed by text
+ * shaped like a field key inside their own message; if the model quotes it
+ * as instructed, `field()`'s first-match search finds the injected line,
+ * not the model's genuine one.
+ *
+ * `act:` is always the final field in both the GATE and normal templates —
+ * nothing legitimate follows it — so its genuine occurrence is always the
+ * LAST one in the block regardless of what an analysand embeds earlier.
+ * `ledger:` likewise has exactly one genuine occurrence, positioned after
+ * `heard:`, the only field that could precede it with injected content.
+ * Taking the last match instead of the first closes this off for both.
+ * (`gate:`/`mode:` need no such change — they are always the first fields
+ * in the template, before either verbatim-quoting field, so nothing
+ * injected can appear ahead of them.)
+ */
+function lastField(work: string, key: string): string | null {
+  const re = new RegExp(`^[ \\t]*${key}[ \\t]*:[ \\t]*(.+)$`, 'gim');
+  let last: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(work)) !== null) last = m[1].trim();
+  return last;
+}
+
+/** Index just after the last `key:` line, or 0 (search the whole block) if that field is absent. */
+function afterLastField(work: string, key: string): number {
+  const re = new RegExp(`^[ \\t]*${key}[ \\t]*:.*$`, 'gim');
+  let end = -1;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(work)) !== null) end = m.index + m[0].length;
+  return end === -1 ? 0 : end;
+}
+
+/**
  * Nominations are pipe-delimited free text, not JSON — the model is not
  * reliable at nested structured output, and this mechanism is optional and
  * additive, so a malformed line is simply dropped rather than failing the
@@ -72,7 +107,7 @@ export function parseTurn(raw: string): ParsedTurn {
       .trim();
   }
 
-  const actField = field(work, 'act') ?? '';
+  const actField = lastField(work, 'act') ?? '';
   const gateField = (field(work, 'gate') ?? '').toLowerCase();
   const modeField = (field(work, 'mode') ?? '').toUpperCase();
 
@@ -97,6 +132,14 @@ export function parseTurn(raw: string): ParsedTurn {
     else if (mode === 'OUT-OF-FRAME') act = 'OUT-OF-FRAME';
   }
 
+  // Nominations are read only from text after the model's own genuine act:
+  // line (§11 instructs the model to place them there) — this keeps them
+  // out of the heard:/ledger: zone where injected content could hide. GATE
+  // turns never nominate at all: §8 suspends the whole analytic apparatus,
+  // and their minimal template gives an analysand nothing to embed
+  // injected text into ahead of act: in the first place.
+  const nominationZone = gateFired ? '' : work.slice(afterLastField(work, 'act'));
+
   return {
     work,
     say: say.trim(),
@@ -104,15 +147,15 @@ export function parseTurn(raw: string): ParsedTurn {
     act,
     mode,
     gateFired,
-    ledgerNote: field(work, 'ledger'),
-    semanticFieldNominations: fields(work, 'semantic_field')
+    ledgerNote: lastField(work, 'ledger'),
+    semanticFieldNominations: fields(nominationZone, 'semantic_field')
       .map(parseSemanticFieldLine)
       .filter((n): n is SemanticFieldNomination => n !== null),
-    borrowedTermNominations: fields(work, 'borrowed_term')
+    borrowedTermNominations: fields(nominationZone, 'borrowed_term')
       .map(parseBorrowedTermLine)
       .filter((n): n is BorrowedTermNomination => n !== null),
-    lawStatedNominations: fields(work, 'law_stated'),
-    formationNominations: fields(work, 'formation')
+    lawStatedNominations: fields(nominationZone, 'law_stated'),
+    formationNominations: fields(nominationZone, 'formation')
       .map(parseFormationLine)
       .filter((n): n is FormationNomination => n !== null),
   };

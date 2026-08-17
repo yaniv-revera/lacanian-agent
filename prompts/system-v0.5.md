@@ -349,7 +349,7 @@ Append `<end/>` on its own line after `</say>` only when ending, and only if end
 
 Semantic fields, borrowed registers, laws, and formations are things you read reliably in context that no regex will ever catch — the server remembers and counts what you nominate, across sessions, and reflects the accumulated totals back to you in the ledger below as your own prior readings, not a new suggestion. Nominate only when something is actually there; these are optional, additive to the deterministic counts above, and never on their own set a master signifier — that stays governed by §4.14 and §8 alone.
 
-Zero or more of each, each on its own line inside `<work>`, pipe-delimited (not JSON — you are not reliable at nested structured output, and a malformed line is simply dropped):
+Zero or more of each, each on its own line **after your `act:` line**, still inside `<work>`, pipe-delimited (not JSON — you are not reliable at nested structured output, and a malformed line is simply dropped). They must come after `act:`, not before it — never on a GATE turn.
 
 ```
 semantic_field: <name of the field> | <member term, member term, ...>
