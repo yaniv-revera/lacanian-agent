@@ -49,6 +49,9 @@ export const config = {
   loginVerifyWindowMinutes: num('LOGIN_VERIFY_WINDOW_MINUTES', 15),
   loginVerifyMaxPerEmail: num('LOGIN_VERIFY_MAX_PER_EMAIL', 10),
   loginVerifyMaxPerIp: num('LOGIN_VERIFY_MAX_PER_IP', 30),
+
+  // §ב2: auth tokens now expire instead of living forever.
+  authTokenTtlDays: num('AUTH_TOKEN_TTL_DAYS', 30),
 };
 
 export function assertProviderConfigured(): void {

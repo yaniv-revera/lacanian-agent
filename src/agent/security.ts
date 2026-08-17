@@ -82,3 +82,16 @@ export function evaluateLoginCode(
   }
   return { result: 'ok', incrementAttempt: false };
 }
+
+export interface AuthTokenRecord {
+  userId: number;
+  expiresAt: number;
+}
+
+export type AuthTokenVerdict = { valid: true; userId: number } | { valid: false };
+
+/** §ב2: a token at or past its expiry instant is invalid — `<=`, not `<`. */
+export function evaluateAuthToken(record: AuthTokenRecord | undefined, now: number): AuthTokenVerdict {
+  if (!record || record.expiresAt <= now) return { valid: false };
+  return { valid: true, userId: record.userId };
+}

@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { config } from './config.js';
 import { emptyLedger, type Ledger } from './types.js';
-import { evaluateLoginCode, type LoginCodeVerifyResult } from './agent/security.js';
+import { evaluateAuthToken, evaluateLoginCode, type LoginCodeVerifyResult } from './agent/security.js';
 
 /**
  * Uses Node's built-in SQLite (`node:sqlite`, Node 22.5+). Deliberately not
@@ -34,10 +34,14 @@ CREATE TABLE IF NOT EXISTS login_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes(email);
 
+-- created_at doubles as issued_at: a token is never re-issued in place,
+-- only deleted (logout) or replaced by a fresh row from a new login.
 CREATE TABLE IF NOT EXISTS auth_tokens (
-  token       TEXT PRIMARY KEY,
-  user_id     INTEGER NOT NULL REFERENCES users(id),
-  created_at  INTEGER NOT NULL
+  token         TEXT PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id),
+  created_at    INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL DEFAULT 0,
+  last_used_at  INTEGER NOT NULL DEFAULT 0
 );
 
 -- per-(scope, key) event log backing fixed-window rate limits. key is
@@ -164,19 +168,30 @@ export function consumeLoginCode(email: string, code: string, maxAttempts: numbe
   return verdict.result;
 }
 
-export function createToken(userId: number, token: string): void {
-  db.prepare('INSERT INTO auth_tokens (token, user_id, created_at) VALUES (?, ?, ?)').run(
-    token,
-    userId,
-    now(),
-  );
+export function createToken(userId: number, token: string, ttlMs: number): void {
+  const t = now();
+  db.prepare(
+    'INSERT INTO auth_tokens (token, user_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(token, userId, t, t + ttlMs, t);
 }
 
+/** Rejects (and does not touch) an expired token; otherwise stamps last_used_at. */
 export function userIdForToken(token: string): number | null {
-  const row = db.prepare('SELECT user_id FROM auth_tokens WHERE token = ?').get(token) as
-    | { user_id: number }
+  const row = db.prepare('SELECT user_id, expires_at FROM auth_tokens WHERE token = ?').get(token) as
+    | { user_id: number; expires_at: number }
     | undefined;
-  return row ? Number(row.user_id) : null;
+  const verdict = evaluateAuthToken(
+    row ? { userId: Number(row.user_id), expiresAt: Number(row.expires_at) } : undefined,
+    now(),
+  );
+  if (!verdict.valid) return null;
+  db.prepare('UPDATE auth_tokens SET last_used_at = ? WHERE token = ?').run(now(), token);
+  return verdict.userId;
+}
+
+/** Server-side logout: the token row is gone, not merely marked. */
+export function deleteToken(token: string): void {
+  db.prepare('DELETE FROM auth_tokens WHERE token = ?').run(token);
 }
 
 // ---------- rate limiting ----------

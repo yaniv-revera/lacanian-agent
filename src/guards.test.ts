@@ -41,7 +41,9 @@ import {
   constantTimeEqual,
   checkRateLimit,
   evaluateLoginCode,
+  evaluateAuthToken,
   type LoginCodeRecord,
+  type AuthTokenRecord,
 } from './agent/security.js';
 
 let passed = 0;
@@ -1842,6 +1844,32 @@ t('evaluateLoginCode: locked and bad results are indistinguishable in shape (no 
   const locked = evaluateLoginCode(record({ attempts: 5 }), CODE, 1_000_000, 5);
   const bad = evaluateLoginCode(undefined, CODE, 1_000_000, 5);
   assert.deepEqual(Object.keys(locked).sort(), Object.keys(bad).sort());
+});
+
+// --- ב2: token expiry ---
+
+t('evaluateAuthToken: no record is invalid', () => {
+  const v = evaluateAuthToken(undefined, 1_000_000);
+  assert.equal(v.valid, false);
+});
+
+t('evaluateAuthToken: a token before its expiry is valid and reports the user id', () => {
+  const rec: AuthTokenRecord = { userId: 42, expiresAt: 1_000_000 + 1 };
+  const v = evaluateAuthToken(rec, 1_000_000);
+  assert.equal(v.valid, true);
+  assert.equal((v as { valid: true; userId: number }).userId, 42);
+});
+
+t('evaluateAuthToken: a token exactly at its expiry instant is invalid', () => {
+  const rec: AuthTokenRecord = { userId: 42, expiresAt: 1_000_000 };
+  const v = evaluateAuthToken(rec, 1_000_000);
+  assert.equal(v.valid, false);
+});
+
+t('evaluateAuthToken: a token past its expiry is invalid', () => {
+  const rec: AuthTokenRecord = { userId: 42, expiresAt: 999_999 };
+  const v = evaluateAuthToken(rec, 1_000_000);
+  assert.equal(v.valid, false);
 });
 
 await Promise.all(pending);

@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import {
   consumeLoginCode,
   createToken,
+  deleteToken,
   now,
   rateLimitTimestamps,
   recordRateLimitEvent,
@@ -117,13 +118,24 @@ authRouter.post('/verify', (req, res) => {
   }
   const user = upsertUser(email);
   const token = randomBytes(32).toString('hex');
-  createToken(user.id, token);
+  createToken(user.id, token, config.authTokenTtlDays * 24 * 60 * 60 * 1000);
   res.json({ token });
 });
 
-export function requireUser(req: { headers: Record<string, unknown> }): number | null {
+function tokenFromHeader(req: { headers: Record<string, unknown> }): string | null {
   const header = String(req.headers['authorization'] ?? '');
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  return token || null;
+}
+
+authRouter.post('/logout', (req, res) => {
+  const token = tokenFromHeader(req);
+  if (token) deleteToken(token);
+  res.json({ ok: true });
+});
+
+export function requireUser(req: { headers: Record<string, unknown> }): number | null {
+  const token = tokenFromHeader(req);
   if (!token) return null;
   return userIdForToken(token);
 }
