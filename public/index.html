@@ -27,6 +27,28 @@
     <p class="err" id="login-err"></p>
   </section>
 
+  <!-- consent -->
+  <section id="consent" class="screen hidden">
+    <div class="consent-text" id="consent-text"></div>
+    <p class="hint">
+      This build is a closed research pilot. It is not for anyone currently in crisis
+      or in acute psychiatric treatment, and it is not emergency care.
+      If you are in crisis, use the number below instead of this system.
+    </p>
+    <p class="hint" id="consent-crisis"></p>
+    <p class="hint">
+      You can withdraw at any time. Deleting your account (from the session screen,
+      once you begin) permanently and immediately removes your account and everything
+      in it — there is no separate withdrawal process.
+    </p>
+    <label class="consent-check">
+      <input type="checkbox" id="consent-checkbox" />
+      I have read this and I agree.
+    </label>
+    <button id="consent-submit" disabled>Continue</button>
+    <p class="err" id="consent-err"></p>
+  </section>
+
   <!-- locked -->
   <section id="locked" class="screen hidden">
     <p class="lede">The session was ended.</p>

@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import {
   appendTurn,
   countAct,
+  getConsentStatus,
   getLedger,
   getSession,
   lockoutUntil,
@@ -16,6 +17,7 @@ import {
 } from '../db.js';
 import { requireUser } from './auth.js';
 import { checkAndRecordRateLimit, rateLimitedResponse } from './rateLimit.js';
+import { CONSENT_VERSION, CONSENT_TEXT_V1, needsConsent } from '../agent/consent.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { parseTurn } from '../agent/parse.js';
 import {
@@ -57,10 +59,23 @@ function auth(req: any, res: any): number | null {
   return uid;
 }
 
+/**
+ * Pilot item 1: no session may begin — or continue — without active
+ * consent to the current CONSENT_VERSION. The text is included in the
+ * response so the frontend can render the consent screen without a
+ * second round trip.
+ */
+function requireConsent(uid: number, res: any): boolean {
+  if (!needsConsent(getConsentStatus(uid), CONSENT_VERSION)) return true;
+  res.status(403).json({ error: 'consent_required', version: CONSENT_VERSION, text: CONSENT_TEXT_V1 });
+  return false;
+}
+
 /** State of the door. */
 sessionRouter.get('/state', (req, res) => {
   const uid = auth(req, res);
   if (uid === null) return;
+  if (!requireConsent(uid, res)) return;
 
   const gate = checkAndRecordRateLimit(
     'session_create',
@@ -99,6 +114,7 @@ sessionRouter.get('/state', (req, res) => {
 sessionRouter.post('/say', async (req, res) => {
   const uid = auth(req, res);
   if (uid === null) return;
+  if (!requireConsent(uid, res)) return;
 
   const gate = checkAndRecordRateLimit(
     'turn_submit',

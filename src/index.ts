@@ -28,6 +28,10 @@ app.get('/api/health', (_req, res) => {
     provider: config.provider,
     lockoutHours: config.lockoutHours,
     crisisResources: config.crisisResources === 'UNAVAILABLE' ? 'UNAVAILABLE' : 'configured',
+    // The raw text, not just whether it's set: this is public and unauthenticated
+    // on purpose — the login and consent screens need it before anyone signs in,
+    // and it is exactly the text the analyst itself is allowed to say (never invented).
+    crisisResourcesText: config.crisisResources === 'UNAVAILABLE' ? '' : config.crisisResources,
   });
 });
 

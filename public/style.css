@@ -111,6 +111,27 @@ button:disabled { opacity: .35; cursor: default; }
 
 #send { align-self: flex-end; padding: .35rem .8rem; }
 
+/* consent */
+
+.consent-text {
+  white-space: pre-wrap;
+  overflow-y: auto;
+  max-height: 45vh;
+  border: 1px solid var(--line);
+  padding: .9rem;
+  margin-bottom: 1rem;
+  font-size: .92rem;
+}
+
+.consent-check {
+  display: flex;
+  align-items: baseline;
+  gap: .5rem;
+  font-size: .9rem;
+  margin: 1rem 0;
+  cursor: pointer;
+}
+
 .countdown {
   font-size: 1.4rem;
   font-variant-numeric: tabular-nums;

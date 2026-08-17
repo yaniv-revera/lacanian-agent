@@ -6,11 +6,13 @@ import {
   createToken,
   deleteToken,
   deleteUser,
+  recordConsent,
   storeLoginCode,
   upsertUser,
   userIdForToken,
 } from '../db.js';
 import { checkAndRecordRateLimit, rateLimitedResponse } from './rateLimit.js';
+import { CONSENT_VERSION, CONSENT_TEXT_V1, hashConsentText } from '../agent/consent.js';
 
 export const authRouter = Router();
 
@@ -116,6 +118,27 @@ export function requireUser(req: { headers: Record<string, unknown> }): number |
  * deleted along with everything else (it belongs to auth_tokens, which
  * deleteUser already clears), so there is nothing left to separately log out.
  */
+/**
+ * Pilot item 1: a session cannot begin without an active checkbox consent
+ * to the current CONSENT_VERSION — enforced in session.ts, not here. This
+ * endpoint only records that consent. `agree` must be the literal boolean
+ * `true`; anything else (missing, a string, false) is rejected, so a
+ * pre-checked or auto-submitted box can't stand in for an active choice.
+ */
+authRouter.post('/consent', (req, res) => {
+  const uid = requireUser(req);
+  if (!uid) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  if (req.body?.agree !== true) {
+    res.status(400).json({ error: 'consent_not_given' });
+    return;
+  }
+  recordConsent(uid, CONSENT_VERSION, hashConsentText(CONSENT_TEXT_V1));
+  res.json({ ok: true, version: CONSENT_VERSION });
+});
+
 authRouter.delete('/account', (req, res) => {
   const uid = requireUser(req);
   if (!uid) {

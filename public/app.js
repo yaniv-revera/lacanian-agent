@@ -20,7 +20,15 @@ async function api(path, opts = {}) {
 }
 
 function show(which) {
-  for (const id of ['login', 'locked', 'session']) $(id).classList.toggle('hidden', id !== which);
+  for (const id of ['login', 'consent', 'locked', 'session']) $(id).classList.toggle('hidden', id !== which);
+}
+
+let healthCache = null;
+async function health() {
+  if (healthCache) return healthCache;
+  const res = await fetch('/api/health');
+  healthCache = await res.json().catch(() => ({}));
+  return healthCache;
 }
 
 // ---------- login ----------
@@ -61,6 +69,34 @@ $('code-form').addEventListener('submit', async (e) => {
   localStorage.setItem(KEY, token);
   await boot();
 });
+
+// ---------- consent ----------
+
+$('consent-checkbox').addEventListener('change', (e) => {
+  $('consent-submit').disabled = !e.target.checked;
+});
+
+$('consent-submit').addEventListener('click', async () => {
+  $('consent-err').textContent = '';
+  const { status } = await api('/api/auth/consent', {
+    method: 'POST',
+    body: JSON.stringify({ agree: true }),
+  });
+  if (status !== 200) {
+    $('consent-err').textContent = 'That did not go through — try again.';
+    return;
+  }
+  await boot();
+});
+
+async function renderConsent(text) {
+  show('consent');
+  $('consent-text').textContent = text;
+  $('consent-checkbox').checked = false;
+  $('consent-submit').disabled = true;
+  const h = await health();
+  $('consent-crisis').textContent = h.crisisResourcesText || 'No verified crisis line is configured for this build.';
+}
 
 // ---------- the door ----------
 
@@ -171,6 +207,10 @@ async function boot() {
     localStorage.removeItem(KEY);
     token = '';
     show('login');
+    return;
+  }
+  if (status === 403 && body.error === 'consent_required') {
+    await renderConsent(body.text);
     return;
   }
   if (body.locked) {

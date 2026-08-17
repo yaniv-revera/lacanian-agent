@@ -46,6 +46,13 @@ import {
   type AuthTokenRecord,
 } from './agent/security.js';
 import { rateLimitedResponse } from './routes/rateLimit.js';
+import {
+  hashConsentText,
+  needsConsent,
+  CONSENT_VERSION,
+  CONSENT_TEXT_V1,
+  type ConsentStatus,
+} from './agent/consent.js';
 
 let passed = 0;
 const pending: Promise<void>[] = [];
@@ -1899,6 +1906,36 @@ t('rateLimitedResponse: retryAfterSeconds is never reported as zero', () => {
 
 t('config no longer carries a dead sessionSecret field', () => {
   assert.equal('sessionSecret' in config, false);
+});
+
+// --- pilot item 1: informed consent, recorded ---
+
+t('hashConsentText is deterministic', () => {
+  assert.equal(hashConsentText('hello'), hashConsentText('hello'));
+});
+
+t('hashConsentText differs for different text', () => {
+  assert.notEqual(hashConsentText('hello'), hashConsentText('goodbye'));
+});
+
+t('hashConsentText of the current CONSENT_TEXT_V1 is a 64-char hex sha256 digest', () => {
+  const h = hashConsentText(CONSENT_TEXT_V1);
+  assert.equal(/^[0-9a-f]{64}$/.test(h), true);
+});
+
+t('needsConsent: never consented', () => {
+  const s: ConsentStatus = { consentedAt: null, consentVersion: null };
+  assert.equal(needsConsent(s, CONSENT_VERSION), true);
+});
+
+t('needsConsent: consented at the current version', () => {
+  const s: ConsentStatus = { consentedAt: 1_000_000, consentVersion: CONSENT_VERSION };
+  assert.equal(needsConsent(s, CONSENT_VERSION), false);
+});
+
+t('needsConsent: consented at an older version — must re-consent', () => {
+  const s: ConsentStatus = { consentedAt: 1_000_000, consentVersion: 'v0' };
+  assert.equal(needsConsent(s, CONSENT_VERSION), true);
 });
 
 await Promise.all(pending);

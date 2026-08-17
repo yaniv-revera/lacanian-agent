@@ -18,10 +18,13 @@ db.exec('PRAGMA foreign_keys = ON');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
-  id          INTEGER PRIMARY KEY,
-  email       TEXT UNIQUE NOT NULL,
-  created_at  INTEGER NOT NULL,
-  ledger_json TEXT NOT NULL
+  id              INTEGER PRIMARY KEY,
+  email           TEXT UNIQUE NOT NULL,
+  created_at      INTEGER NOT NULL,
+  ledger_json     TEXT NOT NULL,
+  consented_at    INTEGER,
+  consent_version TEXT,
+  consent_hash    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS login_codes (
@@ -118,6 +121,28 @@ export function getLedger(userId: number): Ledger {
 
 export function saveLedger(userId: number, ledger: Ledger): void {
   db.prepare('UPDATE users SET ledger_json = ? WHERE id = ?').run(JSON.stringify(ledger), userId);
+}
+
+// ---------- consent (pilot item 1) ----------
+
+export function getConsentStatus(userId: number): { consentedAt: number | null; consentVersion: string | null } {
+  const row = db.prepare('SELECT consented_at, consent_version FROM users WHERE id = ?').get(userId) as
+    | { consented_at: number | null; consent_version: string | null }
+    | undefined;
+  if (!row) return { consentedAt: null, consentVersion: null };
+  return {
+    consentedAt: row.consented_at === null || row.consented_at === undefined ? null : Number(row.consented_at),
+    consentVersion: row.consent_version ?? null,
+  };
+}
+
+export function recordConsent(userId: number, version: string, hash: string): void {
+  db.prepare('UPDATE users SET consented_at = ?, consent_version = ?, consent_hash = ? WHERE id = ?').run(
+    now(),
+    version,
+    hash,
+    userId,
+  );
 }
 
 // ---------- auth ----------
