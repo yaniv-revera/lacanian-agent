@@ -10,7 +10,6 @@ function num(key: string, fallback: number): number {
 export const config = {
   port: num('PORT', 3000),
   dbPath: process.env.DB_PATH ?? './data/app.db',
-  sessionSecret: process.env.SESSION_SECRET ?? 'dev-secret-change-me',
 
   provider: (process.env.LLM_PROVIDER ?? 'anthropic') as 'anthropic' | 'openai' | 'mock',
   anthropicKey: process.env.ANTHROPIC_API_KEY ?? '',

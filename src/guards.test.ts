@@ -1891,6 +1891,16 @@ t('rateLimitedResponse: retryAfterSeconds is never reported as zero', () => {
   assert.equal(r.retryAfterSeconds, 1);
 });
 
+// --- ב5: SESSION_SECRET was dead code (defined, never read anywhere —
+// auth uses random opaque DB-backed bearer tokens, not signed
+// cookies/JWTs, so there was no cryptographic role to attach it to). A
+// placeholder secret that looks load-bearing but isn't is worse than no
+// secret, so it was removed outright rather than given a manufactured use.
+
+t('config no longer carries a dead sessionSecret field', () => {
+  assert.equal('sessionSecret' in config, false);
+});
+
 await Promise.all(pending);
 
 console.error(`\n  ${passed} guard tests passed\n`);

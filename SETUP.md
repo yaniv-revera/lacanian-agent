@@ -258,7 +258,7 @@ docker build -t lacanian-agent .
 להריץ:
 
 ```bash
-docker run --rm -p 3000:3000 -v "$(pwd)/data:/data" -e LLM_PROVIDER=mock -e SESSION_SECRET=dev-only lacanian-agent
+docker run --rm -p 3000:3000 -v "$(pwd)/data:/data" -e LLM_PROVIDER=mock lacanian-agent
 ```
 
 - `-p 3000:3000` מחבר את הפורט של הקופסה למק
@@ -284,8 +284,15 @@ fly volumes create data --size 3
 
 הסודות — **לא לגיטהאב ולא לקובץ, ישירות ל-fly:**
 
+**קובץ `.env` לא נטען בפרודקשן, בכלל.** `dotenv/config` קורא `.env` רק אם הוא קיים על הדיסק, ו-fly.io לא מעלה את הקובץ הזה (הוא ברשימת ה-`.gitignore` ואף אחד לא שם אותו בתמונת הדוקר). כל מה שהשרת רואה בפרודקשן זה מה ש-`fly secrets set` שם — שום דבר אחר.
+
+שלושה משתנים **חייבים** להיות מוגדרים כ-fly secrets לפני `fly deploy` הראשון:
+
+- `ANTHROPIC_API_KEY` (או `OPENAI_API_KEY` אם `LLM_PROVIDER=openai`) — בלעדיו השרת מסרב לעלות (`assertProviderConfigured`).
+- `CRISIS_RESOURCES` — מספרי חירום אמיתיים ומאומתים, לפי המדינה שלך. אם זה ריק, הסוכן יגיד שאין לו מספר מאומת במקום להמציא אחד — בטוח, אבל הרבה פחות שימושי במצב אמיתי.
+
 ```bash
-fly secrets set ANTHROPIC_API_KEY="sk-ant-..." SESSION_SECRET="$(openssl rand -hex 32)" LLM_PROVIDER="anthropic"
+fly secrets set ANTHROPIC_API_KEY="sk-ant-..." CRISIS_RESOURCES="Israel: ERAN 1201 | Emergency 101" LLM_PROVIDER="anthropic"
 ```
 
 ```bash
@@ -295,7 +302,7 @@ fly deploy
 fly open
 ```
 
-> **לפני שמישהו אחר נכנס לכתובת** — שלבים 1 ו-2 ב-`platform-guide.md`: הגבלת קצב, פקיעת טוקנים, מחיקת חשבון, ופרוטוקול מצבי הקיצון.
+> **לפני שמישהו אחר נכנס לכתובת** — הגבלת קצב על בקשות התחברות ועל פניות לסוכן, פקיעת קודי התחברות וטוקנים, ומחיקת חשבון אמיתית כבר ממומשים בקוד (ב1–ב4 בסקירת האבטחה). מה שנשאר: לוודא ש-`CRISIS_RESOURCES` באמת מוגדר לפני שמישהו אמיתי משתמש בזה.
 
 ---
 
