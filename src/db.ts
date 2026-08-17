@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { config } from './config.js';
 import { emptyLedger, type Ledger } from './types.js';
+import { evaluateLoginCode, type LoginCodeVerifyResult } from './agent/security.js';
 
 /**
  * Uses Node's built-in SQLite (`node:sqlite`, Node 22.5+). Deliberately not
@@ -28,7 +29,8 @@ CREATE TABLE IF NOT EXISTS login_codes (
   email       TEXT NOT NULL,
   code        TEXT NOT NULL,
   expires_at  INTEGER NOT NULL,
-  used        INTEGER NOT NULL DEFAULT 0
+  used        INTEGER NOT NULL DEFAULT 0,
+  attempts    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes(email);
 
@@ -37,6 +39,16 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   user_id     INTEGER NOT NULL REFERENCES users(id),
   created_at  INTEGER NOT NULL
 );
+
+-- per-(scope, key) event log backing fixed-window rate limits. key is
+-- an email or an IP address depending on scope; never both in the same row.
+CREATE TABLE IF NOT EXISTS rate_limit_events (
+  id          INTEGER PRIMARY KEY,
+  scope       TEXT NOT NULL,
+  key         TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limit_events_scope_key ON rate_limit_events(scope, key, created_at);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id             INTEGER PRIMARY KEY,
@@ -115,13 +127,41 @@ export function storeLoginCode(email: string, code: string, ttlMs: number): void
   );
 }
 
-export function consumeLoginCode(email: string, code: string): boolean {
+/**
+ * The row is fetched by email alone — never `WHERE code = ?` — so the code
+ * comparison itself happens in JS via `evaluateLoginCode`'s constant-time
+ * check, not in SQLite, which would short-circuit on the first mismatched
+ * byte and leak timing. See `evaluateLoginCode` for why `bad` covers every
+ * rejection reason except the attempt ceiling.
+ */
+export function consumeLoginCode(email: string, code: string, maxAttempts: number): LoginCodeVerifyResult {
   const row = db
-    .prepare('SELECT id, expires_at, used FROM login_codes WHERE email = ? AND code = ?')
-    .get(email, code) as { id: number; expires_at: number; used: number } | undefined;
-  if (!row || Number(row.used) === 1 || Number(row.expires_at) < now()) return false;
-  db.prepare('UPDATE login_codes SET used = 1 WHERE id = ?').run(row.id);
-  return true;
+    .prepare('SELECT id, code, expires_at, used, attempts FROM login_codes WHERE email = ?')
+    .get(email) as
+    | { id: number; code: string; expires_at: number; used: number; attempts: number }
+    | undefined;
+
+  const verdict = evaluateLoginCode(
+    row
+      ? {
+          code: String(row.code),
+          expiresAt: Number(row.expires_at),
+          used: Number(row.used) === 1,
+          attempts: Number(row.attempts),
+        }
+      : undefined,
+    code,
+    now(),
+    maxAttempts,
+  );
+
+  if (row && verdict.incrementAttempt) {
+    db.prepare('UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?').run(row.id);
+  }
+  if (row && verdict.result === 'ok') {
+    db.prepare('UPDATE login_codes SET used = 1 WHERE id = ?').run(row.id);
+  }
+  return verdict.result;
 }
 
 export function createToken(userId: number, token: string): void {
@@ -137,6 +177,22 @@ export function userIdForToken(token: string): number | null {
     | { user_id: number }
     | undefined;
   return row ? Number(row.user_id) : null;
+}
+
+// ---------- rate limiting ----------
+
+/** Timestamps for `scope`+`key` events newer than `sinceMs` ago, for `checkRateLimit`. */
+export function rateLimitTimestamps(scope: string, key: string, sinceMs: number): number[] {
+  const rows = db
+    .prepare('SELECT created_at FROM rate_limit_events WHERE scope = ? AND key = ? AND created_at > ?')
+    .all(scope, key, now() - sinceMs) as { created_at: number }[];
+  return rows.map((r) => Number(r.created_at));
+}
+
+/** Records one event and opportunistically prunes anything older than a day, across all scopes. */
+export function recordRateLimitEvent(scope: string, key: string): void {
+  db.prepare('INSERT INTO rate_limit_events (scope, key, created_at) VALUES (?, ?, ?)').run(scope, key, now());
+  db.prepare('DELETE FROM rate_limit_events WHERE created_at < ?').run(now() - 24 * 60 * 60 * 1000);
 }
 
 // ---------- lockout ----------

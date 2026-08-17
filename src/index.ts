@@ -11,6 +11,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 assertProviderConfigured();
 
 const app = express();
+// fly.io terminates TLS at its edge and proxies over a single trusted hop, so
+// req.ip is otherwise the proxy's address, not the caller's — which would
+// collapse the per-IP rate limits (§ב1, §ב3) onto one shared bucket for
+// every visitor.
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(resolve(here, '../public')));
 

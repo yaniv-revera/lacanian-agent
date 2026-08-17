@@ -37,6 +37,12 @@ import {
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
+import {
+  constantTimeEqual,
+  checkRateLimit,
+  evaluateLoginCode,
+  type LoginCodeRecord,
+} from './agent/security.js';
 
 let passed = 0;
 const pending: Promise<void>[] = [];
@@ -1730,6 +1736,112 @@ t('the other explicit-crisis entries are untouched — no self-reference gating 
   assert.equal(isExplicitCrisisLanguage('אף אחד לא יתגעגע אליי.'), true);
   // "אין שום טעם" was not the reported false-positive entry and stays as-is.
   assert.equal(isExplicitCrisisLanguage('אין שום טעם בכלום.'), true);
+});
+
+// --- ב1: login-code brute-force protection ---
+
+t('constantTimeEqual: equal strings match', () => {
+  assert.equal(constantTimeEqual('123456', '123456'), true);
+});
+
+t('constantTimeEqual: different strings of equal length do not match', () => {
+  assert.equal(constantTimeEqual('123456', '123457'), false);
+});
+
+t('constantTimeEqual: strings of different length do not match (and do not throw)', () => {
+  assert.equal(constantTimeEqual('123456', '1234567'), false);
+  assert.equal(constantTimeEqual('1', ''), false);
+});
+
+t('constantTimeEqual: empty vs empty matches', () => {
+  assert.equal(constantTimeEqual('', ''), true);
+});
+
+t('checkRateLimit: allows when under the max within the window', () => {
+  const now = 1_000_000;
+  const timestamps = [now - 1000, now - 2000];
+  const d = checkRateLimit(timestamps, now, 60_000, 5);
+  assert.equal(d.allowed, true);
+  assert.equal(d.retryAfterMs, 0);
+});
+
+t('checkRateLimit: blocks at the max within the window', () => {
+  const now = 1_000_000;
+  const timestamps = [now - 1000, now - 2000, now - 3000];
+  const d = checkRateLimit(timestamps, now, 60_000, 3);
+  assert.equal(d.allowed, false);
+  assert.ok(d.retryAfterMs > 0);
+});
+
+t('checkRateLimit: events outside the window do not count', () => {
+  const now = 1_000_000;
+  const windowMs = 60_000;
+  const timestamps = [now - windowMs - 1, now - windowMs - 5000];
+  const d = checkRateLimit(timestamps, now, windowMs, 2);
+  assert.equal(d.allowed, true);
+});
+
+t('checkRateLimit: exact retryAfterMs value reflects when the oldest in-window event falls out', () => {
+  const now = 1_000_000;
+  const windowMs = 60_000;
+  const timestamps = [now - 50_000, now - 10_000];
+  const d = checkRateLimit(timestamps, now, windowMs, 2);
+  // oldest in-window event was 50s ago; it falls out of the window in windowMs - 50_000 = 10_000ms
+  assert.equal(d.retryAfterMs, windowMs - 50_000);
+});
+
+const CODE = '778899';
+
+function record(overrides: Partial<LoginCodeRecord> = {}): LoginCodeRecord {
+  return { code: CODE, expiresAt: 1_000_000 + 60_000, used: false, attempts: 0, ...overrides };
+}
+
+t('evaluateLoginCode: no record at all is rejected without incrementing anything', () => {
+  const r = evaluateLoginCode(undefined, CODE, 1_000_000, 5);
+  assert.equal(r.result, 'bad');
+  assert.equal(r.incrementAttempt, false);
+});
+
+t('evaluateLoginCode: correct code within the attempt budget succeeds', () => {
+  const r = evaluateLoginCode(record({ attempts: 4 }), CODE, 1_000_000, 5);
+  assert.equal(r.result, 'ok');
+  assert.equal(r.incrementAttempt, false);
+});
+
+t('evaluateLoginCode: wrong code is rejected and flagged to increment the attempt counter', () => {
+  const r = evaluateLoginCode(record(), '000000', 1_000_000, 5);
+  assert.equal(r.result, 'bad');
+  assert.equal(r.incrementAttempt, true);
+});
+
+t('evaluateLoginCode: already-used code is rejected without incrementing (single-use)', () => {
+  const r = evaluateLoginCode(record({ used: true }), CODE, 1_000_000, 5);
+  assert.equal(r.result, 'bad');
+  assert.equal(r.incrementAttempt, false);
+});
+
+t('evaluateLoginCode: expired code is rejected without incrementing', () => {
+  const r = evaluateLoginCode(record({ expiresAt: 999_999 }), CODE, 1_000_000, 5);
+  assert.equal(r.result, 'bad');
+  assert.equal(r.incrementAttempt, false);
+});
+
+t('evaluateLoginCode: at the attempt ceiling, the code is locked even if the supplied code is correct', () => {
+  const r = evaluateLoginCode(record({ attempts: 5 }), CODE, 1_000_000, 5);
+  assert.equal(r.result, 'locked');
+  assert.equal(r.incrementAttempt, false);
+});
+
+t('evaluateLoginCode: a wrong code below the ceiling never returns locked, only bad', () => {
+  const r = evaluateLoginCode(record({ attempts: 4 }), '000000', 1_000_000, 5);
+  assert.equal(r.result, 'bad');
+  assert.equal(r.incrementAttempt, true);
+});
+
+t('evaluateLoginCode: locked and bad results are indistinguishable in shape (no extra fields to key an oracle off of)', () => {
+  const locked = evaluateLoginCode(record({ attempts: 5 }), CODE, 1_000_000, 5);
+  const bad = evaluateLoginCode(undefined, CODE, 1_000_000, 5);
+  assert.deepEqual(Object.keys(locked).sort(), Object.keys(bad).sort());
 });
 
 await Promise.all(pending);
