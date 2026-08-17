@@ -55,7 +55,13 @@ authRouter.post('/request', async (req, res) => {
   }
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
   storeLoginCode(email, code, CODE_TTL_MS);
-  await sendCode(email, code);
+  try {
+    await sendCode(email, code);
+  } catch (err) {
+    console.error(`[mail] FAILED to send login code to ${email}`, err);
+    res.status(502).json({ error: 'mail_failure' });
+    return;
+  }
   res.json({ ok: true, delivery: config.mailer });
 });
 

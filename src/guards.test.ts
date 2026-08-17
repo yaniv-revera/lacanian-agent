@@ -42,6 +42,7 @@ import {
   checkRateLimit,
   evaluateLoginCode,
   evaluateAuthToken,
+  productionSafetyError,
   type LoginCodeRecord,
   type AuthTokenRecord,
 } from './agent/security.js';
@@ -2000,6 +2001,36 @@ t('buildGateNotificationEmail: the function accepts no verbatim-text parameter a
   // Nothing to leak: the only strings interpolated in are the four typed
   // fields above, and the caller (session.ts) never passes turn content.
   assert.ok(text.toLowerCase().includes('transcript'));
+});
+
+// --- pilot item 4: real SMTP, refuse to start in production on MAILER=console ---
+
+t('productionSafetyError: outside production, nothing is checked at all', () => {
+  const e = productionSafetyError({ isProduction: false, allowedEmails: [], mailer: 'console' });
+  assert.equal(e, null);
+});
+
+t('productionSafetyError: in production with a non-empty allowlist and smtp, all clear', () => {
+  const e = productionSafetyError({
+    isProduction: true,
+    allowedEmails: ['a@test.com'],
+    mailer: 'smtp',
+  });
+  assert.equal(e, null);
+});
+
+t('productionSafetyError: in production, an empty allowlist is refused', () => {
+  const e = productionSafetyError({ isProduction: true, allowedEmails: [], mailer: 'smtp' });
+  assert.notEqual(e, null);
+});
+
+t('productionSafetyError: in production, MAILER=console is refused — participants cannot read server logs', () => {
+  const e = productionSafetyError({
+    isProduction: true,
+    allowedEmails: ['a@test.com'],
+    mailer: 'console',
+  });
+  assert.notEqual(e, null);
 });
 
 await Promise.all(pending);

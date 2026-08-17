@@ -95,3 +95,27 @@ export function evaluateAuthToken(record: AuthTokenRecord | undefined, now: numb
   if (!record || record.expiresAt <= now) return { valid: false };
   return { valid: true, userId: record.userId };
 }
+
+export interface ProductionSafetyConfig {
+  isProduction: boolean;
+  allowedEmails: string[];
+  mailer: string;
+}
+
+/**
+ * Pilot items 2 and 4: fail-closed startup checks, extracted as a pure
+ * function so the "what makes production safe" decision is testable
+ * without importing the live config singleton. Returns the first problem
+ * found, or null if production is safe to start (or this isn't
+ * production at all, in which case nothing here applies).
+ */
+export function productionSafetyError(cfg: ProductionSafetyConfig): string | null {
+  if (!cfg.isProduction) return null;
+  if (cfg.allowedEmails.length === 0) {
+    return 'NODE_ENV=production but ALLOWED_EMAILS is empty. Refusing to start open to the public — set ALLOWED_EMAILS.';
+  }
+  if (cfg.mailer !== 'smtp') {
+    return 'NODE_ENV=production but MAILER is not smtp. Participants cannot read server logs — set MAILER=smtp and SMTP_URL.';
+  }
+  return null;
+}

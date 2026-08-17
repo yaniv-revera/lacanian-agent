@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { productionSafetyError } from './agent/security.js';
 
 function num(key: string, fallback: number): number {
   const raw = process.env[key];
@@ -96,13 +97,15 @@ export function assertProviderConfigured(): void {
  * Fail-closed checks that only apply once NODE_ENV=production — a local
  * dev/mock run is allowed to be permissive, but this pilot is not open to
  * the public, and the server must refuse to even start if a production
- * deploy would otherwise be.
+ * deploy would otherwise be. The actual decision lives in
+ * productionSafetyError, which is pure and unit-tested; this just wires
+ * it to the live config and throws.
  */
 export function assertProductionSafety(): void {
-  if (!config.isProduction) return;
-  if (config.allowedEmails.length === 0) {
-    throw new Error(
-      'NODE_ENV=production but ALLOWED_EMAILS is empty. Refusing to start open to the public — set ALLOWED_EMAILS.',
-    );
-  }
+  const error = productionSafetyError({
+    isProduction: config.isProduction,
+    allowedEmails: config.allowedEmails,
+    mailer: config.mailer,
+  });
+  if (error) throw new Error(error);
 }
