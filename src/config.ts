@@ -70,6 +70,16 @@ export const config = {
     .split(',')
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean),
+
+  // Pilot item 3: minimum-viable escalation. Mailed the moment a gate
+  // latches, since independent server-side gate detection and full
+  // clinical escalation are still open release blockers.
+  reviewerEmail: process.env.REVIEWER_EMAIL ?? '',
+  // Absolute origin used to build the transcript link in that email
+  // (e.g. https://lacanian-agent.fly.dev). Falls back to a relative path
+  // if unset — usable locally, but the email should carry an absolute URL
+  // once this is deployed.
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? '').replace(/\/$/, ''),
 };
 
 export function assertProviderConfigured(): void {

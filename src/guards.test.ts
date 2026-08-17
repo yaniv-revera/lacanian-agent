@@ -54,6 +54,7 @@ import {
   type ConsentStatus,
 } from './agent/consent.js';
 import { isEmailAllowed } from './agent/allowlist.js';
+import { shouldNotifyGateLatch, buildGateNotificationEmail } from './agent/gateNotify.js';
 
 let passed = 0;
 const pending: Promise<void>[] = [];
@@ -1959,6 +1960,46 @@ t('isEmailAllowed: an email not on the list is rejected', () => {
 
 t('isEmailAllowed: whitespace around list entries does not defeat matching', () => {
   assert.equal(isEmailAllowed('participant@test.com', [' participant@test.com ']), true);
+});
+
+// --- pilot item 3: gate notification, minimum viable escalation ---
+
+t('shouldNotifyGateLatch: fires exactly on the not-latched -> latched transition', () => {
+  assert.equal(shouldNotifyGateLatch(false, true), true);
+});
+
+t('shouldNotifyGateLatch: does not fire again once already latched (per-session, not per-turn)', () => {
+  assert.equal(shouldNotifyGateLatch(true, true), false);
+});
+
+t('shouldNotifyGateLatch: does not fire when the gate never latches', () => {
+  assert.equal(shouldNotifyGateLatch(false, false), false);
+});
+
+t('buildGateNotificationEmail: includes user, session, turn, and the transcript link', () => {
+  const { subject, text } = buildGateNotificationEmail({
+    userEmail: 'participant@test.com',
+    sessionId: 42,
+    turnIndex: 7,
+    transcriptUrl: 'https://example.com/api/session/transcript/review/abc123',
+  });
+  assert.ok(subject.includes('42'));
+  assert.ok(text.includes('participant@test.com'));
+  assert.ok(text.includes('42'));
+  assert.ok(text.includes('7'));
+  assert.ok(text.includes('https://example.com/api/session/transcript/review/abc123'));
+});
+
+t('buildGateNotificationEmail: the function accepts no verbatim-text parameter at all', () => {
+  const { text } = buildGateNotificationEmail({
+    userEmail: 'participant@test.com',
+    sessionId: 1,
+    turnIndex: 1,
+    transcriptUrl: 'https://example.com/x',
+  });
+  // Nothing to leak: the only strings interpolated in are the four typed
+  // fields above, and the caller (session.ts) never passes turn content.
+  assert.ok(text.toLowerCase().includes('transcript'));
 });
 
 await Promise.all(pending);

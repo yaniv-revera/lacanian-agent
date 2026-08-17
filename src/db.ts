@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { config } from './config.js';
@@ -57,6 +58,16 @@ CREATE TABLE IF NOT EXISTS rate_limit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_rate_limit_events_scope_key ON rate_limit_events(scope, key, created_at);
 
+-- Pilot item 3: an unguessable capability link mailed only to
+-- REVIEWER_EMAIL. The token itself is the credential — this endpoint is
+-- reached without the participant's own bearer token, since the reviewer
+-- is not the participant.
+CREATE TABLE IF NOT EXISTS review_links (
+  token       TEXT PRIMARY KEY,
+  session_id  INTEGER NOT NULL REFERENCES sessions(id),
+  created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   id             INTEGER PRIMARY KEY,
   user_id        INTEGER NOT NULL REFERENCES users(id),
@@ -105,6 +116,11 @@ export function upsertUser(email: string): { id: number; email: string } {
     .prepare('INSERT INTO users (email, created_at, ledger_json) VALUES (?, ?, ?)')
     .run(email, now(), JSON.stringify(emptyLedger()));
   return { id: Number(info.lastInsertRowid), email };
+}
+
+export function getUserEmail(userId: number): string | null {
+  const row = db.prepare('SELECT email FROM users WHERE id = ?').get(userId) as { email: string } | undefined;
+  return row ? String(row.email) : null;
 }
 
 export function getLedger(userId: number): Ledger {
@@ -409,4 +425,24 @@ export function sessionTranscript(sessionId: number): Record<string, unknown>[] 
   return db
     .prepare('SELECT idx, role, text, work, act, created_at FROM turns WHERE session_id = ? ORDER BY id ASC')
     .all(sessionId) as Record<string, unknown>[];
+}
+
+// ---------- review links (pilot item 3) ----------
+
+/** One capability token per call — session.ts creates exactly one, on first gate latch. */
+export function createReviewLink(sessionId: number): string {
+  const token = randomBytes(24).toString('hex');
+  db.prepare('INSERT INTO review_links (token, session_id, created_at) VALUES (?, ?, ?)').run(
+    token,
+    sessionId,
+    now(),
+  );
+  return token;
+}
+
+export function sessionIdForReviewToken(token: string): number | null {
+  const row = db.prepare('SELECT session_id FROM review_links WHERE token = ?').get(token) as
+    | { session_id: number }
+    | undefined;
+  return row ? Number(row.session_id) : null;
 }

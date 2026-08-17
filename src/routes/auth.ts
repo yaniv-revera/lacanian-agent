@@ -14,6 +14,7 @@ import {
 import { checkAndRecordRateLimit, rateLimitedResponse } from './rateLimit.js';
 import { CONSENT_VERSION, CONSENT_TEXT_V1, hashConsentText } from '../agent/consent.js';
 import { isEmailAllowed } from '../agent/allowlist.js';
+import { sendMail } from '../mailer.js';
 
 /** Empty list means unrestricted (local dev); a non-empty list is enforced. */
 function isAllowed(email: string): boolean {
@@ -25,24 +26,7 @@ export const authRouter = Router();
 const CODE_TTL_MS = config.loginCodeTtlMinutes * 60 * 1000;
 
 async function sendCode(email: string, code: string): Promise<void> {
-  if (config.mailer === 'smtp' && config.smtpUrl) {
-    // Optional dependency: `npm i nodemailer` only when SMTP is actually used.
-    const spec = 'node' + 'mailer'; // computed so tsc does not resolve an optional dep
-    const mod: any = await import(spec).catch(() => null);
-    if (!mod) {
-      console.error('[mail] MAILER=smtp but nodemailer is not installed; falling back to console.');
-    } else {
-      const transport = (mod.default ?? mod).createTransport(config.smtpUrl);
-      await transport.sendMail({
-        from: config.mailFrom,
-        to: email,
-        subject: 'Your code',
-        text: `${code}\n\nThis code expires in ${config.loginCodeTtlMinutes} minutes.`,
-      });
-      return;
-    }
-  }
-  console.error(`\n[login code] ${email} -> ${code}\n`);
+  await sendMail(email, 'Your code', `${code}\n\nThis code expires in ${config.loginCodeTtlMinutes} minutes.`);
 }
 
 authRouter.post('/request', async (req, res) => {

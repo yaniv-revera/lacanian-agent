@@ -3,13 +3,16 @@ import { config } from '../config.js';
 import {
   appendTurn,
   countAct,
+  createReviewLink,
   getConsentStatus,
   getLedger,
   getSession,
+  getUserEmail,
   lockoutUntil,
   openSession,
   recentActs,
   saveLedger,
+  sessionIdForReviewToken,
   sessionTranscript,
   sessionTurns,
   setLockout,
@@ -18,6 +21,8 @@ import {
 import { requireUser } from './auth.js';
 import { checkAndRecordRateLimit, rateLimitedResponse } from './rateLimit.js';
 import { CONSENT_VERSION, CONSENT_TEXT_V1, needsConsent } from '../agent/consent.js';
+import { shouldNotifyGateLatch, buildGateNotificationEmail } from '../agent/gateNotify.js';
+import { sendMail } from '../mailer.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
 import { parseTurn } from '../agent/parse.js';
 import {
@@ -287,6 +292,7 @@ sessionRouter.post('/say', async (req, res) => {
 
   // 4. Enforce the frame. The model proposes; the server disposes.
   const gateLatched = !!s.gate_latched || parsed.gateFired;
+  const isFirstGateLatch = shouldNotifyGateLatch(!!s.gate_latched, gateLatched);
   const decision = evaluateEnd(parsed.wantsEnd, {
     turnCount: nextIdx,
     gateLatched,
@@ -326,6 +332,29 @@ sessionRouter.post('/say', async (req, res) => {
     mode: parsed.mode,
   });
 
+  // Pilot item 3: minimum-viable escalation, once per session, on the
+  // latch transition only. A failure here is logged loudly but must never
+  // surface to the participant or affect their session.
+  if (isFirstGateLatch) {
+    try {
+      if (!config.reviewerEmail) {
+        console.error(`[gate-notify] REVIEWER_EMAIL is not configured; cannot notify for session ${s.id}`);
+      } else {
+        const reviewToken = createReviewLink(s.id);
+        const transcriptUrl = `${config.publicBaseUrl}/api/session/transcript/review/${reviewToken}`;
+        const email = buildGateNotificationEmail({
+          userEmail: getUserEmail(uid) ?? 'unknown',
+          sessionId: s.id,
+          turnIndex: nextIdx,
+          transcriptUrl,
+        });
+        await sendMail(config.reviewerEmail, email.subject, email.text);
+      }
+    } catch (err) {
+      console.error(`[gate-notify] FAILED to notify reviewer for session ${s.id}`, err);
+    }
+  }
+
   // 5. The end, and the door.
   if (decision.allowed) {
     const endedBy = decision.forced ? 'ceiling' : 'analyst';
@@ -357,6 +386,26 @@ sessionRouter.post('/say', async (req, res) => {
   }
 
   res.json({ say: parsed.say, ended: false, turnCount: nextIdx, gateLatched });
+});
+
+/**
+ * Pilot item 3: the reviewer's capability link from the gate-notification
+ * email. Registered before /transcript/:id so "review" is never captured
+ * as that route's :id param. No participant auth — the token itself is
+ * the credential, and it is only ever mailed to REVIEWER_EMAIL.
+ */
+sessionRouter.get('/transcript/review/:token', (req, res) => {
+  const sessionId = sessionIdForReviewToken(String(req.params.token));
+  if (sessionId === null) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  const s = getSession(sessionId);
+  if (!s) {
+    res.status(404).json({ error: 'not_found' });
+    return;
+  }
+  res.json({ session: s, turns: sessionTranscript(s.id) });
 });
 
 /** Transcript export — the human review the spec requires is not optional. */
