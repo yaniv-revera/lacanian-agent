@@ -45,10 +45,18 @@ function renderLedger(l: Ledger): string {
       .map((s) => ({
         term: s.term,
         count: s.count,
+        turns_seen: s.turns_seen.length,
         candidate_S1: s.candidate_S1,
         interpreted: s.interpreted,
+        surface_forms: s.surface_forms,
         contexts: s.verbatim_contexts.slice(-3),
       })),
+    // Nominated by you in prior turns, not found by regex — these are your
+    // own prior readings, accumulated as facts, not a new suggestion.
+    semantic_fields: l.semantic_fields
+      .slice()
+      .sort((a, b) => b.nomination_count - a.nomination_count)
+      .slice(0, 10),
     master_signifiers: l.master_signifiers,
     borrowed_terms: l.borrowed_terms,
     laws_stated: l.laws_stated.slice(-8),

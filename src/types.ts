@@ -7,6 +7,20 @@ export interface SignifierEntry {
   first_seen_session: number;
   candidate_S1: boolean;
   interpreted: boolean;
+  /** Distinct turn indices this term has appeared in — count alone is not proof of spread. */
+  turns_seen: number[];
+  /** Distinct surface forms actually typed (e.g. "מותר", "ומותר") — term is the normalised key. */
+  surface_forms: string[];
+}
+
+export interface SemanticFieldEntry {
+  name: string;
+  member_terms: string[];
+  /** How many times the model has nominated this field, across turns and sessions. */
+  nomination_count: number;
+  first_seen_session: number;
+  last_session: number;
+  last_turn: number;
 }
 
 export interface MasterSignifier {
@@ -26,6 +40,10 @@ export interface BorrowedTerm {
   /** Defaults to true. Only false once all six A15 exclusions are ruled out. */
   load_bearing: boolean;
   puncture_permitted: boolean;
+  /** The model's guess at where the vocabulary comes from — '' if never nominated. */
+  suspected_register: string;
+  /** How many times the model has nominated this term, across turns and sessions. */
+  nomination_count: number;
 }
 
 export interface Formation {
@@ -52,6 +70,12 @@ export interface EchoedSignifier {
 export interface Ledger {
   session_count: number;
   signifiers: SignifierEntry[];
+  /**
+   * Semantic fields, borrowed registers and other context the model reads
+   * reliably but regex cannot — nominated in the model's <work> block,
+   * additive to the deterministic layers, never a replacement for them.
+   */
+  semantic_fields: SemanticFieldEntry[];
   master_signifiers: MasterSignifier[];
   borrowed_terms: BorrowedTerm[];
   laws_stated: { text: string; session: number; turn: number; exclusion_class: string | null }[];
@@ -73,6 +97,7 @@ export function emptyLedger(): Ledger {
   return {
     session_count: 0,
     signifiers: [],
+    semantic_fields: [],
     master_signifiers: [],
     borrowed_terms: [],
     laws_stated: [],
@@ -85,6 +110,22 @@ export function emptyLedger(): Ledger {
   };
 }
 
+export interface SemanticFieldNomination {
+  name: string;
+  member_terms: string[];
+}
+
+export interface BorrowedTermNomination {
+  term: string;
+  suspected_register: string;
+  load_bearing: boolean;
+}
+
+export interface FormationNomination {
+  kind: string;
+  verbatim: string;
+}
+
 export interface ParsedTurn {
   work: string;
   say: string;
@@ -93,6 +134,16 @@ export interface ParsedTurn {
   mode: Mode;
   gateFired: boolean;
   ledgerNote: string | null;
+  /**
+   * Optional structured nominations parsed from the <work> block — the model
+   * reads semantic fields, borrowed registers and formations reliably in
+   * context; the server remembers and counts them across sessions. Additive
+   * to the regex layer; never sets master_signifiers by themselves.
+   */
+  semanticFieldNominations: SemanticFieldNomination[];
+  borrowedTermNominations: BorrowedTermNomination[];
+  lawStatedNominations: string[];
+  formationNominations: FormationNomination[];
 }
 
 export interface EndDecision {

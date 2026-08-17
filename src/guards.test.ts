@@ -24,6 +24,12 @@ import {
   isFrameComplaint,
   reportsRepetition,
   updateLedgerFromUser,
+  normalizeHebrewPrefix,
+  recordSemanticFieldNomination,
+  recordBorrowedTermNomination,
+  recordFormationNomination,
+  recordNominations,
+  isSessionOpeningTrigger,
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
@@ -177,7 +183,10 @@ t('a real gate field with content fires even without act starting GATE', () => {
 function pt(over: Partial<ParsedTurn>): ParsedTurn {
   return {
     work: '', say: '', wantsEnd: false, act: 'A3', mode: 'ANALYTIC',
-    gateFired: false, ledgerNote: null, ...over,
+    gateFired: false, ledgerNote: null,
+    semanticFieldNominations: [], borrowedTermNominations: [],
+    lawStatedNominations: [], formationNominations: [],
+    ...over,
   };
 }
 
@@ -889,7 +898,7 @@ t('a repeated Hebrew content word is tracked and becomes a candidate master sign
     ledger = updateLedgerFromUser(ledger, text, 1, i + 1).ledger;
   });
   const entry = ledger.signifiers.find((s) => s.term === 'מותר');
-  assert.ok(entry, 'מותר should be tracked as a signifier');
+  assert.ok(entry, 'מותר should be tracked as a signifier, unmangled by prefix stripping');
   assert.ok(entry!.count >= 4, `expected count >= 4, got ${entry?.count}`);
   assert.equal(entry!.candidate_S1, true);
 });
@@ -920,6 +929,240 @@ t('English signifier extraction still works after the Hebrew fix (regression)', 
   assert.ok(terms.includes('wedding'));
   assert.ok(!terms.includes('the'));
   assert.ok(!terms.includes('is'));
+});
+
+// --- item 1: candidate_S1 requires count>=3 AND spread over >=2 turns ---
+
+t('a function word never becomes candidate_S1, however often it is said', () => {
+  let ledger = emptyLedger();
+  const turns = ['שאני חושב על זה', 'אבל שאני לא בטוח', 'ושאני מרגיש ככה', 'כי שאני תמיד כזה'];
+  turns.forEach((text, i) => {
+    ledger = updateLedgerFromUser(ledger, text, 1, i + 1).ledger;
+  });
+  assert.ok(!ledger.signifiers.some((s) => s.term === 'שאני'), 'שאני must never be tracked at all');
+});
+
+t('newly expanded prefixed-function-word forms are excluded', () => {
+  let ledger = emptyLedger();
+  ledger = updateLedgerFromUser(ledger, 'ואני חושב ועכשיו שהוא יבוא ושהיא תדע שזה נכון', 1, 1).ledger;
+  const terms = ledger.signifiers.map((s) => s.term);
+  for (const w of ['ואני', 'ועכשיו', 'שהוא', 'שהיא', 'שזה']) {
+    assert.ok(!terms.includes(w), `${w} should be filtered as a prefixed function word`);
+  }
+});
+
+t('a content word needs both count>=3 and 2+ distinct turns to become candidate_S1', () => {
+  let ledger = emptyLedger();
+  ledger = updateLedgerFromUser(ledger, 'חריג מאוד', 1, 1).ledger;
+  ledger = updateLedgerFromUser(ledger, 'זה חריג שוב', 1, 2).ledger;
+  let entry = ledger.signifiers.find((s) => s.term === 'חריג');
+  assert.ok(entry, 'חריג should be tracked after two turns');
+  assert.equal(entry!.candidate_S1, false, 'count=2 must not yet qualify');
+
+  ledger = updateLedgerFromUser(ledger, 'תמיד חריג אצלי', 1, 3).ledger;
+  entry = ledger.signifiers.find((s) => s.term === 'חריג');
+  assert.equal(entry!.count, 3);
+  assert.equal(entry!.turns_seen.length, 3);
+  assert.equal(entry!.candidate_S1, true, 'count=3 across 3 distinct turns must qualify');
+});
+
+// --- item 2: prefix normalisation ---
+
+t('single-prefix Hebrew forms unify with the bare form', () => {
+  let ledger = emptyLedger();
+  ledger = updateLedgerFromUser(ledger, 'ביחסים שלי יש בעיה', 1, 1).ledger;
+  ledger = updateLedgerFromUser(ledger, 'החשיבה שלי על היחסים משתנה', 1, 2).ledger;
+  const entry = ledger.signifiers.find((s) => s.term === 'יחסים');
+  assert.ok(entry, 'ביחסים and היחסים should unify under the bare term יחסים');
+  assert.equal(entry!.count, 2);
+  assert.ok(entry!.surface_forms.includes('ביחסים'));
+  assert.ok(entry!.surface_forms.includes('היחסים'));
+});
+
+t('מ is excluded from auto-stripping so it does not corrupt a real word', () => {
+  assert.equal(normalizeHebrewPrefix('מותר'), 'מותר');
+  assert.equal(normalizeHebrewPrefix('מודד'), 'מודד');
+  assert.equal(normalizeHebrewPrefix('משווה'), 'משווה');
+});
+
+t('a leading ו before a מ-initial content word still unifies with the bare form', () => {
+  let ledger = emptyLedger();
+  ledger = updateLedgerFromUser(ledger, 'הוא מודד את עצמו כל הזמן', 1, 1).ledger;
+  ledger = updateLedgerFromUser(ledger, 'ומודד גם אותי לפי זה', 1, 2).ledger;
+  const entry = ledger.signifiers.find((s) => s.term === 'מודד');
+  assert.ok(entry, 'ומודד should strip its leading ו and unify with bare מודד');
+  assert.equal(entry!.count, 2);
+
+  let ledger2 = emptyLedger();
+  ledger2 = updateLedgerFromUser(ledger2, 'הוא תמיד משווה בין אנשים', 1, 1).ledger;
+  ledger2 = updateLedgerFromUser(ledger2, 'ומשווה גם את עצמו', 1, 2).ledger;
+  const entry2 = ledger2.signifiers.find((s) => s.term === 'משווה');
+  assert.ok(entry2, 'ומשווה should strip its leading ו and unify with bare משווה');
+  assert.equal(entry2!.count, 2);
+});
+
+t('stripping is at most one prefix layer — doubly-prefixed forms stay a separate entry', () => {
+  // Known, documented limitation: וליחסים (ו+ל+יחסים) strips only the
+  // leading ו, landing on ליחסים, not the fully-bare יחסים.
+  assert.equal(normalizeHebrewPrefix('וליחסים'), 'ליחסים');
+  assert.equal(normalizeHebrewPrefix('ביחסים'), 'יחסים');
+});
+
+// --- item 3: Hebrew coverage for laws/negation/transference/desupposition, and wiring ---
+
+t('a Hebrew normative statement lands in laws_stated', () => {
+  const { ledger } = updateLedgerFromUser(emptyLedger(), 'מה שונה או חריג ומה מקובל', 1, 1);
+  assert.ok(
+    ledger.laws_stated.some((l) => l.text.includes('מקובל')),
+    'the מקובל statement should be recorded in laws_stated',
+  );
+});
+
+t('a Hebrew negation lands in specific_negations with the negated object captured', () => {
+  const { ledger } = updateLedgerFromUser(emptyLedger(), 'אף אחד לא הקשיב לי אז.', 1, 1);
+  assert.ok(ledger.specific_negations.length > 0, 'a negation should be recorded');
+  assert.ok(ledger.specific_negations[0].negated_object.includes('הקשיב'));
+});
+
+t('a Hebrew transference marker lands in transference_markers', () => {
+  const { ledger } = updateLedgerFromUser(emptyLedger(), 'רק אתה מבין אותי באמת.', 1, 1);
+  assert.ok(ledger.transference_markers.length > 0, 'a transference marker should be recorded');
+});
+
+t('a Hebrew desupposition statement is reported to its consumer', () => {
+  const { desupposition } = updateLedgerFromUser(emptyLedger(), 'אתה רק מכונה, זה חסר טעם.', 1, 1);
+  assert.equal(desupposition, true);
+});
+
+// --- item 4: mechanical stutter / immediate-repetition detection ---
+
+t('a repeated token within a 3-token window is recorded as a formation, verbatim', () => {
+  const { ledger } = updateLedgerFromUser(emptyLedger(), 'לפי אני לפי מה שקרה.', 1, 1);
+  const hit = ledger.formations.find((f) => f.type === 'self_correct' && f.text.includes('לפי אני לפי'));
+  assert.ok(hit, 'the repeated word span should be recorded verbatim');
+});
+
+t('an immediate repeat is also caught', () => {
+  const { ledger } = updateLedgerFromUser(emptyLedger(), 'זה זה מה שקרה.', 1, 1);
+  assert.ok(ledger.formations.some((f) => f.type === 'self_correct'));
+});
+
+t('no false positive when nothing repeats', () => {
+  const { ledger } = updateLedgerFromUser(emptyLedger(), 'לפי מה שקרה אתמול בבית.', 1, 1);
+  assert.ok(!ledger.formations.some((f) => f.type === 'self_correct'));
+});
+
+// --- item 5: model nominations, additive to the regex layer ---
+
+t('parseTurn extracts semantic_field, borrowed_term, law_stated and formation nominations', () => {
+  const raw =
+    '<work>\n' +
+    'act: A3\n' +
+    'semantic_field: measuring/comparing | מודד, משווה, לפי, מקובל, בנורמה, סטנדרטים, אנומליות, חריג\n' +
+    'borrowed_term: attachment style | psychology | load_bearing: yes\n' +
+    'law_stated: מה שונה או חריג ומה מקובל\n' +
+    'formation: repetition | לפי אני לפי\n' +
+    '</work>\n<say>x</say>';
+  const p = parseTurn(raw);
+  assert.equal(p.semanticFieldNominations.length, 1);
+  assert.equal(p.semanticFieldNominations[0].name, 'measuring/comparing');
+  assert.ok(p.semanticFieldNominations[0].member_terms.includes('מודד'));
+  assert.equal(p.borrowedTermNominations.length, 1);
+  assert.equal(p.borrowedTermNominations[0].term, 'attachment style');
+  assert.equal(p.borrowedTermNominations[0].load_bearing, true);
+  assert.deepEqual(p.lawStatedNominations, ['מה שונה או חריג ומה מקובל']);
+  assert.equal(p.formationNominations.length, 1);
+  assert.equal(p.formationNominations[0].kind, 'repetition');
+});
+
+t('borrowed_term load_bearing defaults true unless explicitly no/false', () => {
+  const p = parseTurn('<work>borrowed_term: gaslighting | psychology</work><say>x</say>');
+  assert.equal(p.borrowedTermNominations[0].load_bearing, true);
+  const p2 = parseTurn('<work>borrowed_term: gaslighting | psychology | load_bearing: no</work><say>x</say>');
+  assert.equal(p2.borrowedTermNominations[0].load_bearing, false);
+});
+
+t('a malformed nomination line is dropped, not thrown', () => {
+  const p = parseTurn('<work>semantic_field: \nborrowed_term: \nformation: onlykind</work><say>x</say>');
+  assert.deepEqual(p.semanticFieldNominations, []);
+  assert.deepEqual(p.borrowedTermNominations, []);
+  assert.deepEqual(p.formationNominations, []);
+});
+
+t('recordSemanticFieldNomination creates then accumulates a running cross-session count', () => {
+  let ledger = emptyLedger();
+  ledger = recordSemanticFieldNomination(
+    ledger,
+    { name: 'measuring/comparing', member_terms: ['מודד', 'משווה'] },
+    1,
+    3,
+  );
+  let entry = ledger.semantic_fields.find((f) => f.name === 'measuring/comparing');
+  assert.ok(entry);
+  assert.equal(entry!.nomination_count, 1);
+  assert.deepEqual(entry!.member_terms, ['מודד', 'משווה']);
+
+  ledger = recordSemanticFieldNomination(
+    ledger,
+    { name: 'measuring/comparing', member_terms: ['משווה', 'לפי'] },
+    2,
+    5,
+  );
+  entry = ledger.semantic_fields.find((f) => f.name === 'measuring/comparing');
+  assert.equal(entry!.nomination_count, 2);
+  assert.deepEqual(entry!.member_terms, ['מודד', 'משווה', 'לפי']);
+  assert.equal(entry!.last_session, 2);
+});
+
+t('recordBorrowedTermNomination adds a model-sourced entry distinct from the regex source', () => {
+  const ledger = recordBorrowedTermNomination(emptyLedger(), {
+    term: 'attachment style',
+    suspected_register: 'psychology',
+    load_bearing: true,
+  });
+  const entry = ledger.borrowed_terms.find((b) => b.term === 'attachment style');
+  assert.ok(entry);
+  assert.equal(entry!.source, 'model_nomination');
+  assert.equal(entry!.nomination_count, 1);
+  assert.equal(entry!.suspected_register, 'psychology');
+});
+
+t('nominations are additive: the regex layer still fires independently of nominations', () => {
+  const { ledger } = updateLedgerFromUser(emptyLedger(), 'that sounds like gaslighting to me.', 1, 1);
+  assert.ok(ledger.borrowed_terms.some((b) => b.term === 'gaslighting' && b.source === 'unknown'));
+});
+
+t('recordNominations never touches master_signifiers', () => {
+  const parsed = pt({
+    semanticFieldNominations: [{ name: 'x', member_terms: ['y'] }],
+    borrowedTermNominations: [{ term: 'z', suspected_register: 'r', load_bearing: true }],
+    lawStatedNominations: ['some law'],
+    formationNominations: [{ kind: 'slip', verbatim: 'a b' }],
+  });
+  const ledger = recordNominations(emptyLedger(), parsed, 1, 1);
+  assert.deepEqual(ledger.master_signifiers, []);
+});
+
+t('recordFormationNomination maps free-text kind onto the closed Formation.type set', () => {
+  const ledger = recordFormationNomination(emptyLedger(), { kind: 'stutter/repetition', verbatim: 'x y x' }, 1, 1);
+  assert.equal(ledger.formations[0].type, 'self_correct');
+  assert.ok(ledger.formations[0].note?.includes('stutter/repetition'));
+});
+
+// --- item 6: the UI opening trigger never feeds analysand-turn analysis ---
+
+t('isSessionOpeningTrigger matches only turn 1 with the exact sentinel text', () => {
+  assert.equal(isSessionOpeningTrigger(1, '(begins)'), true);
+  assert.equal(isSessionOpeningTrigger(2, '(begins)'), false, 'must not match on a later turn');
+  assert.equal(isSessionOpeningTrigger(1, 'begins'), false, 'must require the exact sentinel');
+});
+
+t('a caller that forgets the guard would leak "begins" — this is why session.ts must check first', () => {
+  // updateLedgerFromUser has no reason to know about UI sentinels; the guard
+  // belongs at the session.ts call site (isSessionOpeningTrigger), which
+  // must skip this call entirely rather than pass the sentinel through.
+  const { ledger } = updateLedgerFromUser(emptyLedger(), '(begins)', 1, 1);
+  assert.ok(ledger.signifiers.some((s) => s.term === 'begins'));
 });
 
 await Promise.all(pending);

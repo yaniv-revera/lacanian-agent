@@ -32,8 +32,10 @@ import {
   assentRunStats,
   blockedSignifiers,
   isFrameComplaint,
+  isSessionOpeningTrigger,
   recordAnalystNote,
   recordEchoedSignifier,
+  recordNominations,
   reportsRepetition,
   updateLedgerFromUser,
 } from '../agent/ledger.js';
@@ -99,15 +101,16 @@ sessionRouter.post('/say', async (req, res) => {
   const s = openSession(uid);
   const nextIdx = s.turn_count + 1;
 
-  // 1. Record what was said and read it into the ledger.
+  // 1. Record what was said and read it into the ledger. The UI's opening
+  // nudge ("(begins)", turn 1) is a stage direction, not analysand speech —
+  // it is still recorded as a turn (the model needs something to respond
+  // to), but it must never feed the ledger or any analysand-turn analysis.
   appendTurn(s.id, nextIdx, 'user', text);
   const before = getLedger(uid);
-  const { ledger: afterUser, desupposition } = updateLedgerFromUser(
-    before,
-    text,
-    s.session_index,
-    nextIdx,
-  );
+  const openingTrigger = isSessionOpeningTrigger(nextIdx, text);
+  const { ledger: afterUser, desupposition } = openingTrigger
+    ? { ledger: before, desupposition: false }
+    : updateLedgerFromUser(before, text, s.session_index, nextIdx);
 
   // 2. Build the position.
   const acts = recentActs(s.id, 5);
@@ -115,7 +118,9 @@ sessionRouter.post('/say', async (req, res) => {
   const endPermitted =
     !s.gate_latched && nextIdx >= config.minTurnsBeforeEnd && acts[0] !== 'A16';
 
-  const userTurns = allTurns.filter((t) => t.role === 'user');
+  const userTurns = allTurns.filter(
+    (t) => t.role === 'user' && !isSessionOpeningTrigger(t.idx, t.text),
+  );
   const assentCountLast5 = assentRunStats(userTurns.map((t) => t.text)).count;
 
   const recentAnalystUtterances = allTurns
@@ -238,10 +243,15 @@ sessionRouter.post('/say', async (req, res) => {
   const workLog = [parsed.work, flags.length ? `\n[server flags] ${flags.join(' ')}` : ''].join('');
   appendTurn(s.id, nextIdx, 'analyst', parsed.say, workLog, parsed.act ?? undefined);
 
-  const ledgerAfterAnalyst = recordEchoedSignifier(
-    recordAnalystNote({ ...afterUser, session_count: s.session_index }, parsed.ledgerNote),
-    parsed.act,
-    parsed.say,
+  const ledgerAfterAnalyst = recordNominations(
+    recordEchoedSignifier(
+      recordAnalystNote({ ...afterUser, session_count: s.session_index }, parsed.ledgerNote),
+      parsed.act,
+      parsed.say,
+      nextIdx,
+    ),
+    parsed,
+    s.session_index,
     nextIdx,
   );
   saveLedger(uid, ledgerAfterAnalyst);

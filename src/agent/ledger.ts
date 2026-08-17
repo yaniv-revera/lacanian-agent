@@ -1,4 +1,12 @@
-import type { EchoedSignifier, Ledger } from '../types.js';
+import type {
+  BorrowedTermNomination,
+  EchoedSignifier,
+  Formation,
+  FormationNomination,
+  Ledger,
+  ParsedTurn,
+  SemanticFieldNomination,
+} from '../types.js';
 
 /**
  * Deterministic listening support. This does not replace the model's reading —
@@ -11,11 +19,10 @@ import type { EchoedSignifier, Ledger } from '../types.js';
  * Function words filtered from signifier tracking. Hebrew forms cover the
  * same closed categories as the English list (pronouns, demonstratives,
  * copula/existential, modal auxiliaries, prepositions, conjunctions,
- * question words, quantifiers) but are standalone words only — Hebrew
- * attaches ו/ה/ב/כ/ל/מ/ש directly to the following word with no space
- * (e.g. "שזה", "וגם"), and a fused prefix+word token will not match either
- * list. That needs a morphological stemmer, not a word list; not attempted
- * here.
+ * question words, quantifiers), including the most common PREFIXED forms
+ * (ו/ה/ב/ל/כ/מ/ש fused onto a following function word, e.g. "שזה", "ואני") —
+ * see normalizeHebrewPrefix below for the general single-prefix stripping
+ * rule applied to content words at extraction time.
  */
 export const STOP = new Set([
   ...`a an the and or but if then than that this these those i me my mine you your yours he him his she her
@@ -28,9 +35,47 @@ export const STOP = new Set([
    צריכות עם אל על אצל בלי עד אחרי לפני מול ליד תחת מעל בין נגד כמו כי אם אבל או גם רק אז לא כן מה מי איפה
    למה איך מתי כמה איזה איזו כל עוד כבר תמיד עדיין פעם הרבה מעט משהו מישהו כלום כאן שם עכשיו היום אתמול
    מחר אחד אחת שני שתי`.split(/\s+/),
+  ...`ואני ועכשיו שאני שאולי שהוא שהיא שזה ומה ומתי ואיך האלו האלה הזה הזאת ממה לעומת במהלך לשאר אליהם
+   אליה אליו שלי שלנו שלה שלו לפני אחרי בגלל למרות אולי בערך ממש בכלל כאילו`.split(/\s+/),
 ]);
 
-const LAW_PATTERNS = [
+/**
+ * Hebrew attaches ה/ו/ב/ל/כ/מ/ש directly to the next word with no space
+ * (e.g. "ומותר", "בבית"). Fused stopword forms are handled by the STOP list
+ * above; this strips ONE such prefix from a CONTENT word so e.g. "יחסים" and
+ * "ביחסים" are counted as the same signifier. Unconditional except for a
+ * length floor and a check that the remainder isn't itself a function word.
+ *
+ * מ is deliberately EXCLUDED from the strippable set, unlike the other six
+ * letters. Verified against real examples: stripping מ unconditionally turns
+ * "מותר" into "ותר" (not a word) and "משווה" into "שווה" (a real but wrong
+ * word, "worth" vs. "comparing") — because מ is not only the "from"
+ * preposition but also the Hebrew present-tense/participle marker (מודד,
+ * משווה), making it far more often the genuine first letter of a content
+ * word than the other six. Excluding it still correctly unifies "ומודד"
+ * with "מודד" and "ומשווה" with "משווה" (only the leading ו is stripped),
+ * without corrupting the bare forms. This is a deviation from a literal
+ * "strip any of ה/ו/ב/ל/כ/מ/ש" reading — flagged because it changes the
+ * rule as specified, not merely an implementation detail.
+ *
+ * Known remaining limitation: stripping only ONE prefix does not unify
+ * doubly-prefixed forms (e.g. "וליחסים", ו+ל+יחסים) with the bare form —
+ * they normalize one prefix layer down ("ליחסים") and stay a separate entry.
+ */
+const HEBREW_PREFIXES = new Set(['ה', 'ו', 'ב', 'ל', 'כ', 'ש']);
+
+export function normalizeHebrewPrefix(word: string): string {
+  const first = word[0];
+  if (!first || !HEBREW_PREFIXES.has(first)) return word;
+  const remainder = word.slice(1);
+  if (remainder.length < 3 || STOP.has(remainder)) return word;
+  return remainder;
+}
+
+// Note: \b is defined over ASCII \w and does not fire correctly at the edges
+// of Hebrew script, so the _HE pattern lists below never use it.
+
+const LAW_PATTERNS_EN = [
   /\bi'?m (?:just )?(?:someone|somebody|a person) who\b/i,
   /\bthat'?s (?:just )?(?:how it is|the reality|life)\b/i,
   /\bi (?:can'?t|cannot) [a-z]/i,
@@ -38,16 +83,41 @@ const LAW_PATTERNS = [
   /\bi always\b/i,
 ];
 
-const NEGATION_PATTERNS = [
+const LAW_PATTERNS_HE = [
+  /אני (?:פשוט |סתם )?מישהו ש/,
+  /ככה זה/,
+  /זאת המציאות/,
+  /אני (?:אף פעם |מעולם )?לא (?:יכול|מסוגל|מצליח)/,
+  /אני לעולם לא/,
+  /אני תמיד/,
+  /(?:לא )?מקובל/,
+];
+
+const LAW_PATTERNS = [...LAW_PATTERNS_EN, ...LAW_PATTERNS_HE];
+
+const NEGATION_PATTERNS_EN = [
   /\b(?:he|she|they|we|you|it)\s+never\s+([a-z][^.!?]*)/i,
   /\bnobody\s+(?:ever\s+)?([a-z][^.!?]*)/i,
   /\bno\s+one\s+(?:ever\s+)?([a-z][^.!?]*)/i,
   /\bi\s+never\s+(?:got|had|received)\s+([a-z][^.!?]*)/i,
 ];
 
-const SPONTANEOUS_NEGATION = /\b(?:it'?s not that|i'?m not saying|not because|it wasn'?t that)\b/i;
+const NEGATION_PATTERNS_HE = [
+  /(?:הוא|היא|הם|הן|את|אתה)\s+(?:אף פעם|מעולם)\s+לא\s+([א-ת][^.!?]*)/,
+  /אף אחד\s+(?:אף פעם\s+)?לא\s+([א-ת][^.!?]*)/,
+  /אני\s+(?:אף פעם|מעולם)\s+לא\s+(?:קיבלתי|היה לי)\s+([א-ת][^.!?]*)/,
+];
 
-const TRANSFERENCE = [
+const NEGATION_PATTERNS = [...NEGATION_PATTERNS_EN, ...NEGATION_PATTERNS_HE];
+
+const SPONTANEOUS_NEGATION_EN = /\b(?:it'?s not that|i'?m not saying|not because|it wasn'?t that)\b/i;
+const SPONTANEOUS_NEGATION_HE = /(?:זה לא ש|אני לא אומר ש|לא בגלל ש|זה לא היה ש)/;
+
+function isSpontaneousNegation(s: string): boolean {
+  return SPONTANEOUS_NEGATION_EN.test(s) || SPONTANEOUS_NEGATION_HE.test(s);
+}
+
+const TRANSFERENCE_EN = [
   /\byou'?re the only\b/i,
   /\bthe only one who\b/i,
   /\byou (?:really )?(?:get|understand) me\b/i,
@@ -55,11 +125,29 @@ const TRANSFERENCE = [
   /\bi'?ve been waiting (?:all day )?(?:for|to talk)\b/i,
 ];
 
-const DESUPPOSITION = [
+const TRANSFERENCE_HE = [
+  /את[ה]?\s+(?:היחיד|היחידה)\s+ש/,
+  /רק את[ה]?\s+(?:מבין|מבינה)\s+אותי/,
+  /את[ה]?\s+(?:באמת\s+)?(?:מבין|מבינה)\s+אותי/,
+  /אני\s+יכול(?:ה)?\s+לדבר\s+רק\s+איתך/,
+  /חיכיתי\s+כל\s+היום\s+לדבר/,
+];
+
+const TRANSFERENCE = [...TRANSFERENCE_EN, ...TRANSFERENCE_HE];
+
+const DESUPPOSITION_EN = [
   /\byou'?re (?:just|only) (?:a|an) (?:machine|bot|program|ai|algorithm)\b/i,
   /\bthis is pointless\b/i,
   /\byou don'?t (?:actually |really )?know (?:anything|me)\b/i,
 ];
+
+const DESUPPOSITION_HE = [
+  /את[ה]?\s+(?:רק|סתם)\s+(?:מכונה|בוט|תוכנה|תוכנת מחשב|בינה מלאכותית|אלגוריתם)/,
+  /זה\s+חסר\s+טעם/,
+  /את[ה]?\s+לא\s+(?:באמת\s+)?יודע(?:ת)?\s+(?:כלום|אותי)/,
+];
+
+const DESUPPOSITION = [...DESUPPOSITION_EN, ...DESUPPOSITION_HE];
 
 /** Technical vocabulary that is imported theory rather than ordinary feeling. */
 const BORROWED = [
@@ -77,6 +165,22 @@ function sentences(text: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * A stutter: the same token reappearing within a 3-token window (positions
+ * i, i+1, i+2), including an immediate repeat. Mechanical and
+ * language-agnostic — no interpretation, no stopword exclusion; the point is
+ * the formal repetition, not which word it happens to be.
+ */
+function hasRepeatedToken(sentence: string): boolean {
+  const tokens = wordsOf(sentence);
+  for (let i = 0; i < tokens.length; i++) {
+    for (let j = i + 1; j < Math.min(i + 3, tokens.length); j++) {
+      if (tokens[i] === tokens[j]) return true;
+    }
+  }
+  return false;
+}
+
 export interface LedgerUpdate {
   ledger: Ledger;
   desupposition: boolean;
@@ -92,26 +196,40 @@ export function updateLedgerFromUser(
   const sents = sentences(text);
 
   // --- signifiers ---
-  const words = wordsOf(text);
+  // Dedupe and count under the prefix-stripped key (normalizeHebrewPrefix is
+  // a no-op for non-Hebrew words), but keep the raw surface form for context
+  // lookup and for echoing back what the analysand actually typed.
+  const rawWords = wordsOf(text);
   const seenThisTurn = new Set<string>();
-  for (const w of words) {
-    if (STOP.has(w) || seenThisTurn.has(w)) continue;
-    seenThisTurn.add(w);
-    const ctx = sents.find((s) => s.toLowerCase().includes(w)) ?? text.slice(0, 160);
-    const existing = l.signifiers.find((s) => s.term === w);
+  for (const raw of rawWords) {
+    if (STOP.has(raw)) continue;
+    const key = normalizeHebrewPrefix(raw);
+    if (STOP.has(key) || seenThisTurn.has(key)) continue;
+    seenThisTurn.add(key);
+    const ctx = sents.find((s) => s.toLowerCase().includes(raw)) ?? text.slice(0, 160);
+    const existing = l.signifiers.find((s) => s.term === key);
     if (existing) {
       existing.count += 1;
+      if (!existing.turns_seen.includes(turnIndex)) existing.turns_seen.push(turnIndex);
+      existing.turns_seen = existing.turns_seen.slice(-20);
+      if (!existing.surface_forms.includes(raw)) existing.surface_forms.push(raw);
+      existing.surface_forms = existing.surface_forms.slice(-10);
       if (!existing.verbatim_contexts.includes(ctx)) existing.verbatim_contexts.push(ctx);
       if (existing.verbatim_contexts.length > 6) existing.verbatim_contexts.shift();
-      if (existing.count >= 4) existing.candidate_S1 = true;
+      // Function words are already excluded upstream (STOP, checked above on
+      // both the raw and the stripped form); count and spread are the
+      // remaining, explicit conditions — not left implicit in "count" alone.
+      if (existing.count >= 3 && existing.turns_seen.length >= 2) existing.candidate_S1 = true;
     } else {
       l.signifiers.push({
-        term: w,
+        term: key,
         verbatim_contexts: [ctx],
         count: 1,
         first_seen_session: sessionIndex,
         candidate_S1: false,
         interpreted: false,
+        turns_seen: [turnIndex],
+        surface_forms: [raw],
       });
     }
   }
@@ -140,7 +258,7 @@ export function updateLedgerFromUser(
         break;
       }
     }
-    if (SPONTANEOUS_NEGATION.test(s)) {
+    if (isSpontaneousNegation(s)) {
       l.formations.push({
         type: 'spontaneous_negation',
         session: sessionIndex,
@@ -158,6 +276,15 @@ export function updateLedgerFromUser(
     }
   }
 
+  // --- stutter / immediate repetition: mechanical, not interpreted ---
+  // Same token reappearing within a 3-token window (including an immediate
+  // repeat) is recorded verbatim as a self-correction-type formation.
+  for (const s of sents) {
+    if (hasRepeatedToken(s)) {
+      l.formations.push({ type: 'self_correct', session: sessionIndex, turn: turnIndex, text: s });
+    }
+  }
+
   // --- borrowed terms: load_bearing defaults to true, nothing is punctured unchecked ---
   const lower = text.toLowerCase();
   for (const term of BORROWED) {
@@ -167,6 +294,8 @@ export function updateLedgerFromUser(
         source: 'unknown',
         load_bearing: true,
         puncture_permitted: false,
+        suspected_register: '',
+        nomination_count: 0,
       });
     }
   }
@@ -190,6 +319,138 @@ export function updateLedgerFromUser(
   l.transference_markers = l.transference_markers.slice(-40);
 
   return { ledger: l, desupposition };
+}
+
+/**
+ * Semantic fields, borrowed registers, laws and formations the model reads
+ * reliably in context but regex cannot find — nominated in the model's
+ * <work> block (§11), additive to the deterministic layers above, and never
+ * a route to master_signifiers, which stays governed by do_not_interpret and
+ * risk_class alone.
+ */
+export function recordSemanticFieldNomination(
+  ledger: Ledger,
+  nomination: SemanticFieldNomination,
+  sessionIndex: number,
+  turnIndex: number,
+): Ledger {
+  if (!nomination.name) return ledger;
+  const l: Ledger = structuredClone(ledger);
+  const existing = l.semantic_fields.find(
+    (f) => f.name.toLowerCase() === nomination.name.toLowerCase(),
+  );
+  if (existing) {
+    existing.nomination_count += 1;
+    existing.last_session = sessionIndex;
+    existing.last_turn = turnIndex;
+    for (const term of nomination.member_terms) {
+      if (!existing.member_terms.includes(term)) existing.member_terms.push(term);
+    }
+  } else {
+    l.semantic_fields.push({
+      name: nomination.name,
+      member_terms: [...nomination.member_terms],
+      nomination_count: 1,
+      first_seen_session: sessionIndex,
+      last_session: sessionIndex,
+      last_turn: turnIndex,
+    });
+  }
+  l.semantic_fields = l.semantic_fields.slice(-100);
+  return l;
+}
+
+export function recordBorrowedTermNomination(
+  ledger: Ledger,
+  nomination: BorrowedTermNomination,
+): Ledger {
+  if (!nomination.term) return ledger;
+  const l: Ledger = structuredClone(ledger);
+  const existing = l.borrowed_terms.find(
+    (b) => b.term.toLowerCase() === nomination.term.toLowerCase(),
+  );
+  if (existing) {
+    existing.nomination_count += 1;
+    if (!existing.suspected_register && nomination.suspected_register) {
+      existing.suspected_register = nomination.suspected_register;
+    }
+  } else {
+    l.borrowed_terms.push({
+      term: nomination.term,
+      source: 'model_nomination',
+      load_bearing: nomination.load_bearing,
+      puncture_permitted: false,
+      suspected_register: nomination.suspected_register,
+      nomination_count: 1,
+    });
+  }
+  return l;
+}
+
+export function recordLawStatedNomination(
+  ledger: Ledger,
+  verbatim: string,
+  sessionIndex: number,
+  turnIndex: number,
+): Ledger {
+  if (!verbatim) return ledger;
+  const l: Ledger = structuredClone(ledger);
+  l.laws_stated.push({ text: verbatim, session: sessionIndex, turn: turnIndex, exclusion_class: null });
+  l.laws_stated = l.laws_stated.slice(-40);
+  return l;
+}
+
+/** Free-text nominated `kind` mapped onto the closed Formation.type set; the original wording is kept in `note`. */
+function mapFormationKind(kind: string): Formation['type'] {
+  const k = kind.toLowerCase();
+  if (k.includes('slip')) return 'slip';
+  if (k.includes('correct') || k.includes('repeat') || k.includes('stutter')) return 'self_correct';
+  if (k.includes('omit') || k.includes('omission')) return 'omission';
+  if (k.includes('person')) return 'person_shift';
+  if (k.includes('negat')) return 'spontaneous_negation';
+  return 'self_correct';
+}
+
+export function recordFormationNomination(
+  ledger: Ledger,
+  nomination: FormationNomination,
+  sessionIndex: number,
+  turnIndex: number,
+): Ledger {
+  if (!nomination.kind || !nomination.verbatim) return ledger;
+  const l: Ledger = structuredClone(ledger);
+  l.formations.push({
+    type: mapFormationKind(nomination.kind),
+    session: sessionIndex,
+    turn: turnIndex,
+    text: nomination.verbatim,
+    note: `model-nominated: ${nomination.kind}`,
+  });
+  l.formations = l.formations.slice(-60);
+  return l;
+}
+
+/** Applies every nomination on a parsed turn to the ledger in one pass. */
+export function recordNominations(
+  ledger: Ledger,
+  parsed: ParsedTurn,
+  sessionIndex: number,
+  turnIndex: number,
+): Ledger {
+  let l = ledger;
+  for (const sf of parsed.semanticFieldNominations) {
+    l = recordSemanticFieldNomination(l, sf, sessionIndex, turnIndex);
+  }
+  for (const bt of parsed.borrowedTermNominations) {
+    l = recordBorrowedTermNomination(l, bt);
+  }
+  for (const law of parsed.lawStatedNominations) {
+    l = recordLawStatedNomination(l, law, sessionIndex, turnIndex);
+  }
+  for (const f of parsed.formationNominations) {
+    l = recordFormationNomination(l, f, sessionIndex, turnIndex);
+  }
+  return l;
 }
 
 export function recordAnalystNote(ledger: Ledger, note: string | null): Ledger {
@@ -388,4 +649,16 @@ export function reportsRepetition(text: string): boolean {
   if (REPETITION_EN.some((p) => p.test(text))) return true;
   const lower = text.toLowerCase();
   return REPETITION_HE.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * The UI sends this exact text as turn 1 to nudge the analyst's unprompted
+ * opening (§2) — it is a stage direction, not analysand speech, and must
+ * never feed the ledger, assent tracking, or any other analysand-turn
+ * analysis.
+ */
+export const SESSION_OPENING_TRIGGER = '(begins)';
+
+export function isSessionOpeningTrigger(turnIndex: number, text: string): boolean {
+  return turnIndex === 1 && text === SESSION_OPENING_TRIGGER;
 }
