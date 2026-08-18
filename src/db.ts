@@ -101,6 +101,97 @@ CREATE TABLE IF NOT EXISTS lockouts (
 );
 `);
 
+// ---------- migrations ----------
+//
+// Found in live testing: CREATE TABLE IF NOT EXISTS above is a no-op for a
+// table that already exists — a column added to that literal SQL text is
+// never created on a database file from before the column existed. On
+// fly.io the data volume persists across deploys, so this would silently
+// break every existing user (and, until the column existed, silently
+// disable whatever the column backed — login_codes.attempts is the exact
+// case that surfaced this). Ordered, idempotent, backfills every column
+// added since the original schema, and refuses to leave a half-migrated
+// database: a failure here throws, which — called unconditionally at
+// module load, before index.ts ever calls app.listen — stops the server
+// from starting at all rather than serving a broken schema.
+
+function columnExists(table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  return rows.some((r) => r.name === column);
+}
+
+function addColumnIfMissing(table: string, column: string, definition: string): void {
+  if (!columnExists(table, column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+interface Migration {
+  version: number;
+  name: string;
+  run: () => void;
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: 'consent columns on users',
+    run: () => {
+      addColumnIfMissing('users', 'consented_at', 'INTEGER');
+      addColumnIfMissing('users', 'consent_version', 'TEXT');
+      addColumnIfMissing('users', 'consent_hash', 'TEXT');
+    },
+  },
+  {
+    version: 2,
+    name: 'attempts column on login_codes',
+    run: () => {
+      addColumnIfMissing('login_codes', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+    },
+  },
+  {
+    version: 3,
+    name: 'expiry columns on auth_tokens',
+    run: () => {
+      addColumnIfMissing('auth_tokens', 'expires_at', 'INTEGER NOT NULL DEFAULT 0');
+      addColumnIfMissing('auth_tokens', 'last_used_at', 'INTEGER NOT NULL DEFAULT 0');
+    },
+  },
+];
+
+/**
+ * Each step is also individually idempotent (addColumnIfMissing checks
+ * PRAGMA table_info before altering) as a second line of defense on top of
+ * the schema_version gate below — belt and suspenders, not redundant: if
+ * the version bookkeeping were ever out of sync, re-running a migration
+ * still wouldn't crash trying to add a column that's already there.
+ */
+export function runMigrations(): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version     INTEGER PRIMARY KEY,
+      applied_at  INTEGER NOT NULL
+    );
+  `);
+  const appliedRows = db.prepare('SELECT version FROM schema_version').all() as { version: number }[];
+  const applied = new Set(appliedRows.map((r) => Number(r.version)));
+
+  for (const m of [...MIGRATIONS].sort((a, b) => a.version - b.version)) {
+    if (applied.has(m.version)) continue;
+    db.exec('BEGIN');
+    try {
+      m.run();
+      db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(m.version, Date.now());
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw new Error(`migration ${m.version} ("${m.name}") failed: ${(err as Error).message}`);
+    }
+  }
+}
+
+runMigrations();
+
 export function now(): number {
   return Date.now();
 }

@@ -10,7 +10,8 @@
     "dev": "tsc -p tsconfig.json && node dist/index.js",
     "test:guards": "tsc -p tsconfig.json && node dist/guards.test.js",
     "test:db": "tsc -p tsconfig.json && node dist/db.test.js",
-    "test": "npm run test:guards && npm run test:db"
+    "test:migrations": "tsc -p tsconfig.json && node dist/migrations.test.js",
+    "test": "npm run test:guards && npm run test:db && npm run test:migrations"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",
