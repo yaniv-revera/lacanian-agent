@@ -20,7 +20,7 @@ import {
 } from '../db.js';
 import { requireUser } from './auth.js';
 import { checkAndRecordRateLimit, rateLimitedResponse } from './rateLimit.js';
-import { CONSENT_VERSION, CONSENT_TEXT_V1, needsConsent } from '../agent/consent.js';
+import { CONSENT_VERSION, CONSENT_TEXT_V1, needsConsent, renderConsentText } from '../agent/consent.js';
 import { shouldNotifyGateLatch, buildGateNotificationEmail } from '../agent/gateNotify.js';
 import { sendMail } from '../mailer.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
@@ -72,7 +72,11 @@ function auth(req: any, res: any): number | null {
  */
 function requireConsent(uid: number, res: any): boolean {
   if (!needsConsent(getConsentStatus(uid), CONSENT_VERSION)) return true;
-  res.status(403).json({ error: 'consent_required', version: CONSENT_VERSION, text: CONSENT_TEXT_V1 });
+  res.status(403).json({
+    error: 'consent_required',
+    version: CONSENT_VERSION,
+    text: renderConsentText(CONSENT_TEXT_V1, config.crisisResources),
+  });
   return false;
 }
 

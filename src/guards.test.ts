@@ -50,6 +50,7 @@ import { rateLimitedResponse } from './routes/rateLimit.js';
 import {
   hashConsentText,
   needsConsent,
+  renderConsentText,
   CONSENT_VERSION,
   CONSENT_TEXT_V1,
   type ConsentStatus,
@@ -1939,6 +1940,27 @@ t('needsConsent: consented at the current version', () => {
 t('needsConsent: consented at an older version — must re-consent', () => {
   const s: ConsentStatus = { consentedAt: 1_000_000, consentVersion: 'v0' };
   assert.equal(needsConsent(s, CONSENT_VERSION), true);
+});
+
+t('renderConsentText: substitutes the {{CRISIS_RESOURCES}} placeholder', () => {
+  const out = renderConsentText('Call {{CRISIS_RESOURCES}} if needed.', 'ERAN 1201');
+  assert.equal(out, 'Call ERAN 1201 if needed.');
+});
+
+t('renderConsentText: substitutes every occurrence, not just the first', () => {
+  const out = renderConsentText('{{CRISIS_RESOURCES}} / {{CRISIS_RESOURCES}}', 'X');
+  assert.equal(out, 'X / X');
+});
+
+t('renderConsentText: never invents a number — an unconfigured resource renders as empty, not a fabricated fallback', () => {
+  const out = renderConsentText('Call {{CRISIS_RESOURCES}}.', 'UNAVAILABLE');
+  assert.equal(out.includes('UNAVAILABLE'), false);
+  assert.equal(out.includes('{{CRISIS_RESOURCES}}'), false);
+});
+
+t('renderConsentText: the version served to the client never contains the raw placeholder token', () => {
+  const out = renderConsentText(CONSENT_TEXT_V1, 'Israel: ERAN 1201');
+  assert.equal(out.includes('{{CRISIS_RESOURCES}}'), false);
 });
 
 // --- pilot item 2: multi-entry allowlist ---
