@@ -31,6 +31,13 @@ async function health() {
   return healthCache;
 }
 
+// Exclusion notice + crisis resources on the login screen, independent of
+// auth state — this has to be visible before anyone signs in.
+health().then((h) => {
+  $('login-crisis').textContent =
+    h.crisisResourcesText || 'No verified crisis line is configured for this build.';
+});
+
 // ---------- login ----------
 
 $('email-form').addEventListener('submit', async (e) => {
