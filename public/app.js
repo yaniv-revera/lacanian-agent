@@ -127,6 +127,21 @@ function renderLock(until) {
   countdownTimer = setInterval(tick, 1000);
 }
 
+// ---------- withdrawal ----------
+
+$('withdraw').addEventListener('click', async () => {
+  const sure = confirm(
+    'Withdraw and permanently delete your account?\n\n' +
+      'This removes your account, every session, and every transcript outright. ' +
+      'This cannot be undone.',
+  );
+  if (!sure) return;
+  await api('/api/auth/account', { method: 'DELETE' });
+  localStorage.removeItem(KEY);
+  token = '';
+  show('login');
+});
+
 // ---------- session ----------
 
 function addTurn(role, text, isGate = false) {

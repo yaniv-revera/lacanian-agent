@@ -111,6 +111,16 @@ button:disabled { opacity: .35; cursor: default; }
 
 #send { align-self: flex-end; padding: .35rem .8rem; }
 
+.withdraw {
+  align-self: flex-end;
+  font-size: .72rem;
+  color: var(--dim);
+  border-color: transparent;
+  padding: .2rem .3rem;
+  margin-bottom: .5rem;
+}
+.withdraw:hover { color: var(--err); border-color: var(--err); }
+
 /* consent */
 
 .consent-text {
