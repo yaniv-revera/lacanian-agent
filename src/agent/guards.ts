@@ -321,7 +321,18 @@ export type DraftRetryReason =
   | { kind: 'a14_excluded' }
   | { kind: 'a15_excluded' }
   | { kind: 'echoed_signifier'; term: string }
-  | { kind: 'near_duplicate'; overlap: number };
+  | { kind: 'near_duplicate'; overlap: number }
+  | { kind: 'completing_interrupted_sentence' }
+  | { kind: 'a16_self_marked_signifier' }
+  | { kind: 'a15_unshakeable_certainty' };
+
+/**
+ * Conduct item 1: acts structurally incapable of supplying the missing word
+ * — A3 quotes only what was actually said, A10 names the gap rather than
+ * filling it. Required speech (A13, A20, §4.6a) is exempt separately, since
+ * it states a plain fact rather than completing anything.
+ */
+const IMPLIED_WORD_SAFE_ACTS = new Set(['A3', 'A10']);
 
 export interface DraftRetryContext {
   /** Most-recent-first, as returned by db.recentActs. */
@@ -348,6 +359,12 @@ export interface DraftRetryContext {
   userA15Excluded: boolean;
   /** Does the analysand's current turn contain language §8 already names verbatim (see ledger.isExplicitCrisisLanguage)? */
   userExplicitCrisisLanguage: boolean;
+  /** Conduct item 1: does the analysand's current turn end on an implied word (see ledger.endsOnImpliedWord)? */
+  userEndsOnImpliedWord: boolean;
+  /** Conduct item 2: has the analysand marked a signifier as specially his own and charged this turn? */
+  userMarkedSignifierAsOwn: boolean;
+  /** Conduct item 3: does the analysand's current turn carry unshakeable, world-organising certainty? */
+  userUnshakeableCertainty: boolean;
 }
 
 /**
@@ -378,6 +395,25 @@ export function decideDraftRetry(p: ParsedTurn, ctx: DraftRetryContext): DraftRe
   const inventedNumber = findInventedNumber(p.say, config.crisisResources);
   if (inventedNumber) return { kind: 'invented_number', number: inventedNumber };
 
+  // Conduct item 1 (Seminar III p.210): applies in ANALYTIC and ANCHORED —
+  // not GATE, which uses act: GATE rather than the numbered repertoire, and
+  // not required speech, which states a plain fact rather than completing
+  // anything. Checked only against a genuine numbered act: plain ANCHORED
+  // prose with no specific act cited isn't policed for content-level
+  // completion here — that would need a grammar check, deliberately not
+  // attempted (fragile, and this system's established pattern is to
+  // restrict the move rather than police the prose after the fact).
+  if (
+    ctx.userEndsOnImpliedWord &&
+    p.mode !== 'GATE' &&
+    !isRequiredSpeechTurn(p) &&
+    p.act !== null &&
+    /^A\d+$/.test(p.act) &&
+    !IMPLIED_WORD_SAFE_ACTS.has(p.act)
+  ) {
+    return { kind: 'completing_interrupted_sentence' };
+  }
+
   if (p.mode === 'GATE' || p.mode === 'ANCHORED') return null;
   if (isRequiredSpeechTurn(p)) return null;
   if (p.act === null) return null;
@@ -394,10 +430,14 @@ export function decideDraftRetry(p: ParsedTurn, ctx: DraftRetryContext): DraftRe
 
   if (p.act === 'A14' && ctx.userA14Excluded) return { kind: 'a14_excluded' };
   if (p.act === 'A15' && ctx.userA15Excluded) return { kind: 'a15_excluded' };
+  // Conduct item 3 (Seminar III p.157): additive to the existing exclusion above.
+  if (p.act === 'A15' && ctx.userUnshakeableCertainty) return { kind: 'a15_unshakeable_certainty' };
 
   if (p.act === 'A16') {
     const dangerousWord = findA16DangerousWord(p.say);
     if (dangerousWord) return { kind: 'a16_dangerous_word', word: dangerousWord };
+    // Conduct item 2 (Seminar III p.54-55).
+    if (ctx.userMarkedSignifierAsOwn) return { kind: 'a16_self_marked_signifier' };
     if (ctx.a16CountThisSession >= config.maxA16PerSession)
       return { kind: 'a16_cap', limit: config.maxA16PerSession };
     if (ctx.recentActs.slice(0, 2).includes('A16')) return { kind: 'a16_window' };
@@ -537,6 +577,12 @@ export function retryOverrideMessage(reason: DraftRetryReason): string {
       return `\n\nSERVER OVERRIDE: "${reason.term}" has already been returned via A16 this session and is still off-limits. Do not return it again in any form — bare, glossed, translated, or quoted. Choose a different act, or a different word.`;
     case 'near_duplicate':
       return `\n\nSERVER OVERRIDE: this draft repeats one of your last three turns in different words (overlap ${reason.overlap.toFixed(2)}). Say something materially different, or use a minimal act instead.`;
+    case 'completing_interrupted_sentence':
+      return `\n\nSERVER OVERRIDE: he stopped mid-sentence and the missing word is implied, not absent. Do not supply it, gloss it, or finish the sentence for him. Use A10 (name the gap, flat) or A3 (quote only what he actually said) instead.`;
+    case 'a16_self_marked_signifier':
+      return `\n\nSERVER OVERRIDE: he has marked a signifier as specially his own and charged this turn. A16 is forbidden — echoing it back adds the weight of the Other to something that is already fully his. Choose a different act.`;
+    case 'a15_unshakeable_certainty':
+      return `\n\nSERVER OVERRIDE: what he said carries unshakeable certainty and organises how he understands his own reality — it is not borrowed vocabulary, even if it sounds like it. A15 is forbidden this turn — choose a different act.`;
   }
 }
 
@@ -570,6 +616,12 @@ export function retryFailureFlag(reason: DraftRetryReason): string {
       return `echoed_signifier_retry_failed:${reason.term}`;
     case 'near_duplicate':
       return `near_duplicate_retry_failed:${reason.overlap.toFixed(2)}`;
+    case 'completing_interrupted_sentence':
+      return 'completing_interrupted_sentence_retry_failed';
+    case 'a16_self_marked_signifier':
+      return 'a16_self_marked_signifier_retry_failed';
+    case 'a15_unshakeable_certainty':
+      return 'a15_unshakeable_certainty_retry_failed';
   }
 }
 
@@ -626,7 +678,11 @@ export function auditTurn(p: ParsedTurn, ctx: AuditContext): string[] {
     }
   }
 
-  if (p.mode === 'ANCHORED' && p.act && ['A5', 'A7', 'A9', 'A14', 'A15', 'A16', 'A17', 'A19'].includes(p.act))
+  // Conduct item 6: A1 added, per adversarial round 2 — it returns "one of
+  // his own words... without comment," which is exactly the mechanism
+  // Seminar III p.209's warning describes (an interlocutor who mostly
+  // returns a person's own words, producing only frustration, not relation).
+  if (p.mode === 'ANCHORED' && p.act && ['A1', 'A5', 'A7', 'A9', 'A14', 'A15', 'A16', 'A17', 'A19'].includes(p.act))
     flags.push(`forbidden_act_in_anchored:${p.act}`);
 
   // Hotline invention: any phone-shaped number that is not in the configured list.

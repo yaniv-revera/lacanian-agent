@@ -40,10 +40,13 @@ import {
 import {
   assentRunStats,
   blockedSignifiers,
+  endsOnImpliedWord,
+  hasUnshakeableCertaintyLanguage,
   isA14Excluded,
   isA15Excluded,
   isExplicitCrisisLanguage,
   isFrameComplaint,
+  isSelfMarkedSignifier,
   isSessionOpeningTrigger,
   recordAnalystNote,
   recordEchoedSignifier,
@@ -207,6 +210,9 @@ sessionRouter.post('/say', async (req, res) => {
   const userA14Excluded = isA14Excluded(text);
   const userA15Excluded = isA15Excluded(text);
   const userExplicitCrisisLanguage = isExplicitCrisisLanguage(text);
+  const userEndsOnImpliedWord = endsOnImpliedWord(text);
+  const userMarkedSignifierAsOwn = isSelfMarkedSignifier(text);
+  const userUnshakeableCertainty = hasUnshakeableCertaintyLanguage(text);
 
   const system = buildSystemPrompt({
     ledger: { ...afterUser, session_count: s.session_index },
@@ -262,6 +268,9 @@ sessionRouter.post('/say', async (req, res) => {
         userA14Excluded,
         userA15Excluded,
         userExplicitCrisisLanguage,
+        userEndsOnImpliedWord,
+        userMarkedSignifierAsOwn,
+        userUnshakeableCertainty,
       },
       async (reason) => {
         const retrySystem = {

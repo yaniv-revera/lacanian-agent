@@ -34,6 +34,9 @@ import {
   isA14Excluded,
   isA15Excluded,
   isExplicitCrisisLanguage,
+  endsOnImpliedWord,
+  isSelfMarkedSignifier,
+  hasUnshakeableCertaintyLanguage,
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
@@ -360,6 +363,9 @@ const RETRY_CTX_BASE: DraftRetryContext = {
   userA14Excluded: false,
   userA15Excluded: false,
   userExplicitCrisisLanguage: false,
+  userEndsOnImpliedWord: false,
+  userMarkedSignifierAsOwn: false,
+  userUnshakeableCertainty: false,
 };
 
 t('decideDraftRetry is null on a short window', () => {
@@ -2053,6 +2059,195 @@ t('productionSafetyError: in production, MAILER=console is refused — participa
     mailer: 'console',
   });
   assert.notEqual(e, null);
+});
+
+// --- conduct half (Seminar III, adversarial rounds 4-5): detection dropped
+// entirely, only the conduct-once-entered mechanisms are implemented here.
+
+// --- item 1: never complete an interrupted sentence ---
+
+t('endsOnImpliedWord: a trailing dash, English', () => {
+  assert.equal(endsOnImpliedWord('She told me that—'), true);
+});
+
+t('endsOnImpliedWord: a trailing dash, Hebrew', () => {
+  assert.equal(endsOnImpliedWord('היא אמרה לי ש—'), true);
+});
+
+t('endsOnImpliedWord: a trailing ellipsis', () => {
+  assert.equal(endsOnImpliedWord('וואו, אני לא יודעת…'), true);
+});
+
+t('endsOnImpliedWord: no terminal punctuation, ends on an open-class function word (EN)', () => {
+  assert.equal(endsOnImpliedWord('I keep thinking about the'), true);
+});
+
+t('endsOnImpliedWord: no terminal punctuation, ends on an open-class function word (HE)', () => {
+  assert.equal(endsOnImpliedWord('אני רוצה לספר לך על'), true);
+});
+
+t('endsOnImpliedWord: a complete, punctuated sentence does not fire', () => {
+  assert.equal(endsOnImpliedWord("I'm doing okay today."), false);
+  assert.equal(endsOnImpliedWord('אני מרגישה טוב היום.'), false);
+});
+
+t('endsOnImpliedWord: unpunctuated but ending on an ordinary content word does not fire', () => {
+  assert.equal(endsOnImpliedWord("I don't know what to say"), false);
+});
+
+t('endsOnImpliedWord: empty text does not fire', () => {
+  assert.equal(endsOnImpliedWord(''), false);
+});
+
+t('decideDraftRetry: blocks a non-safe act when the analysand ends on an implied word', () => {
+  const r = decideDraftRetry(pt({ act: 'A6', mode: 'ANALYTIC' }), {
+    ...RETRY_CTX_BASE,
+    userEndsOnImpliedWord: true,
+  });
+  assert.equal(r?.kind, 'completing_interrupted_sentence');
+});
+
+t('decideDraftRetry: A3 is a permitted response to an implied-word turn', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', mode: 'ANALYTIC' }), {
+    ...RETRY_CTX_BASE,
+    userEndsOnImpliedWord: true,
+  });
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry: A10 is a permitted response to an implied-word turn', () => {
+  const r = decideDraftRetry(pt({ act: 'A10', mode: 'ANALYTIC' }), {
+    ...RETRY_CTX_BASE,
+    userEndsOnImpliedWord: true,
+  });
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry: no implied-word signal means no restriction', () => {
+  const r = decideDraftRetry(pt({ act: 'A6', mode: 'ANALYTIC' }), {
+    ...RETRY_CTX_BASE,
+    userEndsOnImpliedWord: false,
+  });
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry: the implied-word restriction applies in ANCHORED too, not just ANALYTIC', () => {
+  const r = decideDraftRetry(pt({ act: 'A2', mode: 'ANCHORED' }), {
+    ...RETRY_CTX_BASE,
+    userEndsOnImpliedWord: true,
+  });
+  assert.equal(r?.kind, 'completing_interrupted_sentence');
+});
+
+t('decideDraftRetry: GATE is exempt from the implied-word restriction', () => {
+  const r = decideDraftRetry(pt({ act: 'GATE', mode: 'GATE' }), {
+    ...RETRY_CTX_BASE,
+    userEndsOnImpliedWord: true,
+  });
+  assert.equal(r, null);
+});
+
+t('decideDraftRetry: required speech is exempt from the implied-word restriction', () => {
+  const r = decideDraftRetry(pt({ act: 'A13', mode: 'ANALYTIC' }), {
+    ...RETRY_CTX_BASE,
+    userEndsOnImpliedWord: true,
+  });
+  assert.equal(r, null);
+});
+
+// --- item 2: A16 must never echo a self-marked, charged signifier ---
+
+t('isSelfMarkedSignifier: explicit ownership claims, English', () => {
+  assert.equal(isSelfMarkedSignifier('That word is mine.'), true);
+  assert.equal(isSelfMarkedSignifier("That's just my word for it."), true);
+});
+
+t('isSelfMarkedSignifier: explicit ownership claims, Hebrew', () => {
+  assert.equal(isSelfMarkedSignifier('זו המילה שלי.'), true);
+});
+
+t('isSelfMarkedSignifier: liking a word is not the same as marking it as charged and his own', () => {
+  assert.equal(isSelfMarkedSignifier('I like that word.'), false);
+  assert.equal(isSelfMarkedSignifier('אני אוהבת את המילה הזאת.'), false);
+});
+
+t('decideDraftRetry: A16 is blocked on a self-marked signifier', () => {
+  const r = decideDraftRetry(pt({ act: 'A16', mode: 'ANALYTIC', say: 'Enough.' }), {
+    ...RETRY_CTX_BASE,
+    userMarkedSignifierAsOwn: true,
+  });
+  assert.equal(r?.kind, 'a16_self_marked_signifier');
+});
+
+t('decideDraftRetry: A16 is unaffected when no self-marking signal is present', () => {
+  const r = decideDraftRetry(pt({ act: 'A16', mode: 'ANALYTIC', say: 'Enough.' }), {
+    ...RETRY_CTX_BASE,
+    userMarkedSignifierAsOwn: false,
+  });
+  assert.equal(r, null);
+});
+
+// --- item 3: A15 must never puncture unshakeable, world-organising certainty ---
+
+t('hasUnshakeableCertaintyLanguage: immovability markers, English', () => {
+  assert.equal(hasUnshakeableCertaintyLanguage('Nobody could convince me otherwise.'), true);
+});
+
+t('hasUnshakeableCertaintyLanguage: immovability markers, Hebrew', () => {
+  assert.equal(hasUnshakeableCertaintyLanguage('אף אחד לא יכול לשכנע אותי אחרת.'), true);
+});
+
+t('hasUnshakeableCertaintyLanguage: ordinary tentative belief does not fire', () => {
+  assert.equal(hasUnshakeableCertaintyLanguage("I think that's probably true."), false);
+  assert.equal(hasUnshakeableCertaintyLanguage('אני חושבת שזה נכון.'), false);
+});
+
+t('decideDraftRetry: A15 is blocked on unshakeable organising certainty', () => {
+  const r = decideDraftRetry(pt({ act: 'A15', mode: 'ANALYTIC' }), {
+    ...RETRY_CTX_BASE,
+    userUnshakeableCertainty: true,
+  });
+  assert.equal(r?.kind, 'a15_unshakeable_certainty');
+});
+
+t('decideDraftRetry: the existing A15 exclusion (disability terms) is untouched by the new check', () => {
+  const r = decideDraftRetry(pt({ act: 'A15', mode: 'ANALYTIC' }), {
+    ...RETRY_CTX_BASE,
+    userA15Excluded: true,
+    userUnshakeableCertainty: false,
+  });
+  assert.equal(r?.kind, 'a15_excluded');
+});
+
+// --- item 4: do not classify — mode never leaks into what reaches him ---
+
+t('DO NOT CLASSIFY: say never leaks the mode label, even when the work block sets one', () => {
+  const raw = [
+    '<work>',
+    'gate: none',
+    'mode: ANCHORED',
+    'heard: "kept talking about the voice"',
+    'ledger: none',
+    'act: A20 — states a limit',
+    '</work>',
+    '<say>',
+    'I am a computer program. My words are not aimed at you.',
+    '</say>',
+  ].join('\n');
+  const parsed = parseTurn(raw);
+  assert.equal(parsed.mode, 'ANCHORED');
+  assert.equal(/anchored/i.test(parsed.say), false);
+});
+
+// --- item 6: A1 added to the ANCHORED-forbidden audit list ---
+
+t('auditTurn: A1 is now flagged as forbidden in ANCHORED, alongside the existing acts', () => {
+  const f = auditTurn(pt({ mode: 'ANCHORED', act: 'A1', say: 'Go on.' }), {
+    recentActs: [],
+    mode: 'ANCHORED',
+    turnCount: 5,
+  });
+  assert.ok(f.includes('forbidden_act_in_anchored:A1'));
 });
 
 await Promise.all(pending);

@@ -808,6 +808,108 @@ export function isExplicitCrisisLanguage(text: string): boolean {
 }
 
 /**
+ * Conduct item 1 (Seminar III, p.210): "never complete the interrupted
+ * sentence" — the missing word is implied, not absent, and a language
+ * model has a structural pull to supply it. Detected from the analysand's
+ * own turn alone, independent of anything the model does — same shape as
+ * isFrameComplaint/reportsRepetition. Two independent triggers, either
+ * sufficient:
+ *   (a) the turn visibly trails off — an em/en-dash or ellipsis right at
+ *       the end, nothing after it
+ *   (b) the last sentence has no terminal punctuation and ends on a
+ *       closed-class word that essentially never correctly ends a
+ *       complete sentence (a preposition, conjunction, copula, or
+ *       possessive) — a curated subset, not the full STOP list above:
+ *       "כאן" ("here") or "כן" ("yes") can end a real sentence; "כי"
+ *       ("because") or "של" ("of") cannot.
+ * Calibrated generous on purpose, matching §7A's own "high sensitivity,
+ * low specificity" reasoning: the cost of a false positive is the analyst
+ * using A10 or A20 instead of a longer sentence, not a refusal or an
+ * escalation.
+ */
+const TRAILING_OFF_RE = /(?:[-–—]|\.{2,}|…)\s*$/;
+
+const OPEN_ENDING_WORDS_EN = new Set([
+  'that', 'because', 'and', 'but', 'or', 'so', 'if', 'when', 'since', 'though',
+  'although', 'while', 'the', 'a', 'an', 'to', 'of', 'in', 'on', 'at', 'with',
+  'from', 'by', 'for', 'about', 'is', 'was', 'were', 'am', 'are', 'be', 'been',
+  'being', 'my', 'his', 'her', 'their', 'our', 'your', 'its',
+]);
+
+const OPEN_ENDING_WORDS_HE = new Set([
+  'כי', 'אבל', 'או', 'אז', 'אם', 'כש', 'למרות', 'את', 'של', 'על', 'עם', 'אל',
+  'אצל', 'מול', 'בין', 'נגד', 'כמו', 'היה', 'היתה', 'היו', 'להיות', 'יש', 'אין',
+  'שלי', 'שלו', 'שלה', 'שלנו', 'שלכם', 'שלהם',
+]);
+
+export function endsOnImpliedWord(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (TRAILING_OFF_RE.test(trimmed)) return true;
+  const last = sentences(trimmed).at(-1) ?? trimmed;
+  if (/[.!?…׃]\s*$/.test(last)) return false;
+  const words = wordsOf(last);
+  const lastWord = words.at(-1);
+  if (!lastWord) return false;
+  return OPEN_ENDING_WORDS_EN.has(lastWord) || OPEN_ENDING_WORDS_HE.has(lastWord);
+}
+
+/**
+ * Conduct item 2 (Seminar III, p.54-55): "Instance, that is mine. The
+ * others didn't say it to me, it is my normal discourse." A best-effort
+ * textual backstop for the plainest self-marking phrasings, not a
+ * complete implementation — most of what would count as "specially his
+ * own and charged" depends on context this function cannot see.
+ */
+const SELF_MARKED_SIGNIFIER_EN = [
+  /\bthat word is mine\b/i,
+  /\bthat'?s (?:just )?my word\b/i,
+  /\bmy own word for it\b/i,
+  /\bthat'?s how i (?:always )?(?:say|put) it\b/i,
+];
+
+const SELF_MARKED_SIGNIFIER_HE = [
+  'זו המילה שלי',
+  'המילה הזאת שלי',
+  'זה הביטוי שלי',
+  'ככה אני תמיד אומר',
+  'ככה אני תמיד אומרת',
+];
+
+export function isSelfMarkedSignifier(text: string): boolean {
+  if (SELF_MARKED_SIGNIFIER_EN.some((p) => p.test(text))) return true;
+  const lower = text.toLowerCase();
+  return SELF_MARKED_SIGNIFIER_HE.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * Conduct item 3 (Seminar III, p.157): "Psychotics love their delusion
+ * like they love themselves." A construction is not borrowed vocabulary
+ * merely because it sounds technical — the marker this looks for is
+ * immovability, not vocabulary. Best-effort and deliberately narrow:
+ * over-broad matching here would flag ordinary strong conviction, which
+ * is common and not what this exclusion is for.
+ */
+const UNSHAKEABLE_CERTAINTY_EN = [
+  /\bnobody (?:can|could|will) convince me otherwise\b/i,
+  /\bnothing (?:you|anyone) (?:say|says|could say) will change (?:this|that|my mind)\b/i,
+  /\bi know (?:for a fact|for certain|absolutely) that\b/i,
+];
+
+const UNSHAKEABLE_CERTAINTY_HE = [
+  'אף אחד לא יכול לשכנע אותי אחרת',
+  'אני יודעת בוודאות מוחלטת',
+  'אני יודע בוודאות מוחלטת',
+  'זו לא תיאוריה, זו האמת',
+];
+
+export function hasUnshakeableCertaintyLanguage(text: string): boolean {
+  if (UNSHAKEABLE_CERTAINTY_EN.some((p) => p.test(text))) return true;
+  const lower = text.toLowerCase();
+  return UNSHAKEABLE_CERTAINTY_HE.some((phrase) => lower.includes(phrase));
+}
+
+/**
  * The UI sends this exact text as turn 1 to nudge the analyst's unprompted
  * opening (§2) — it is a stage direction, not analysand speech, and must
  * never feed the ledger, assent tracking, or any other analysand-turn
