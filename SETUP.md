@@ -286,13 +286,26 @@ fly volumes create data --size 3
 
 **קובץ `.env` לא נטען בפרודקשן, בכלל.** `dotenv/config` קורא `.env` רק אם הוא קיים על הדיסק, ו-fly.io לא מעלה את הקובץ הזה (הוא ברשימת ה-`.gitignore` ואף אחד לא שם אותו בתמונת הדוקר). כל מה שהשרת רואה בפרודקשן זה מה ש-`fly secrets set` שם — שום דבר אחר.
 
-שלושה משתנים **חייבים** להיות מוגדרים כ-fly secrets לפני `fly deploy` הראשון:
+`fly.toml` כבר מגדיר `NODE_ENV=production`, מה שמפעיל בדיקות פתיחה שנכשלות-בבטחה (`assertProductionSafety`): **השרת מסרב לעלות בכלל** אם `ALLOWED_EMAILS` ריק או אם `MAILER` הוא לא `smtp`. זה פיילוט סגור, לא השקה פומבית — אלה לא אזהרות, אלה תנאי סף.
 
-- `ANTHROPIC_API_KEY` (או `OPENAI_API_KEY` אם `LLM_PROVIDER=openai`) — בלעדיו השרת מסרב לעלות (`assertProviderConfigured`).
-- `CRISIS_RESOURCES` — מספרי חירום אמיתיים ומאומתים, לפי המדינה שלך. אם זה ריק, הסוכן יגיד שאין לו מספר מאומת במקום להמציא אחד — בטוח, אבל הרבה פחות שימושי במצב אמיתי.
+חייבים להיות מוגדרים כ-fly secrets לפני `fly deploy` הראשון:
+
+- `ANTHROPIC_API_KEY` (או `OPENAI_API_KEY` אם `LLM_PROVIDER=openai`) — בלעדיו השרת מסרב לעלות.
+- `ALLOWED_EMAILS` — רשימת המשתתפים, מופרדת בפסיקים. חובה בפרודקשן; ריק = השרת מסרב לעלות.
+- `MAILER=smtp` **וגם** `SMTP_URL` **וגם** `MAIL_FROM` — חובה בפרודקשן; `MAILER=console` גורם לשרת לסרב לעלות, כי משתתפים לא יכולים לקרוא את הלוגים של השרת.
+- `CRISIS_RESOURCES` — מספרי חירום אמיתיים ומאומתים, לפי המדינה שלך. מוצג גם למי שעדיין לא נכנס (מסך ההתחברות וההסכמה).
+- `REVIEWER_EMAIL` — לאן הודעת ה-gate (כשה-gate ננעל) נשלחת. בלי זה, הודעת gate לא תישלח לאף אחד — רק תירשם ללוג כשגיאה.
+- `PUBLIC_BASE_URL` — למשל `https://lacanian-agent.fly.dev` — כדי שהקישור לתמלול בהודעת ה-gate יהיה קישור אמיתי ולא נתיב יחסי.
 
 ```bash
-fly secrets set ANTHROPIC_API_KEY="sk-ant-..." CRISIS_RESOURCES="Israel: ERAN 1201 | Emergency 101" LLM_PROVIDER="anthropic"
+fly secrets set \
+  ANTHROPIC_API_KEY="sk-ant-..." \
+  ALLOWED_EMAILS="participant1@example.com,participant2@example.com" \
+  MAILER="smtp" SMTP_URL="smtps://user:pass@smtp.example.com" MAIL_FROM="no-reply@example.com" \
+  CRISIS_RESOURCES="Israel: ERAN 1201 | Emergency 101" \
+  REVIEWER_EMAIL="you@example.com" \
+  PUBLIC_BASE_URL="https://lacanian-agent.fly.dev" \
+  LLM_PROVIDER="anthropic"
 ```
 
 ```bash

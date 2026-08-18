@@ -7,6 +7,10 @@ primary_region = "cdg"
 [env]
   PORT = "3000"
   DB_PATH = "/data/app.db"
+  # Turns on the fail-closed startup checks (ALLOWED_EMAILS required,
+  # MAILER=console refused) — without this they never engage, and this is
+  # a closed pilot, not a public launch.
+  NODE_ENV = "production"
 
 [[mounts]]
   source = "data"
