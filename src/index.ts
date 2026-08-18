@@ -17,6 +17,13 @@ const app = express();
 // collapse the per-IP rate limits (§ב1, §ב3) onto one shared bucket for
 // every visitor.
 app.set('trust proxy', 1);
+// Pilot item 7: a closed research pilot has no reason to be indexed, and
+// every reason not to be findable by search or crawled by a bot.
+// robots.txt covers well-behaved crawlers; the header covers the rest.
+app.use((_req, res, next) => {
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  next();
+});
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(resolve(here, '../public')));
 
