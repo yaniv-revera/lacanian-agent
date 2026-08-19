@@ -514,6 +514,26 @@ export function recordEchoedSignifier(
 }
 
 /**
+ * Live-session finding 1(b)/(c): a bare signifier returned as a whole turn
+ * IS an echo by definition — labelling it A1, A3, or anything else does not
+ * change what it is. "Short" is capped at 3 words: long enough to allow "a
+ * bit stuck" but not so long it starts catching ordinary short original
+ * sentences that happen to reuse a couple of his words. Deliberately checks
+ * raw substring presence in his own recent turns, not the ledger's
+ * STOP-filtered signifier list — a bare pronoun like "הם" is exactly the
+ * kind of short, structurally significant echo this exists to catch, and
+ * pronouns are filtered out of ledger.signifiers entirely (they are noise
+ * for content-signifier tracking, but not for this).
+ */
+export function isBareEcho(say: string, recentUserUtterances: string[]): boolean {
+  const normalized = normalizeEchoedSignifier(say);
+  if (!normalized) return false;
+  const words = wordsOf(normalized);
+  if (words.length === 0 || words.length > 3) return false;
+  return recentUserUtterances.some((t) => t.toLowerCase().includes(normalized));
+}
+
+/**
  * Terms still off-limits this turn: inside the 5-analyst-turn cooldown since
  * their most recent occurrence, or past it but never reintroduced by the
  * analysand himself since. `userTurns` need only cover turns after the
@@ -623,6 +643,10 @@ const FRAME_COMPLAINT_HE = [
   'למה אתה חוזר',
   'אתה חוזר על עצמך',
   'זה לא עוזר',
+  // Live-session finding 2. "אתה לא עונה לי" is already caught by "אתה לא
+  // עונה" above as a substring; "לא ענית" is a distinct verb form (past
+  // tense) that isn't.
+  'לא ענית',
 ];
 
 export function isFrameComplaint(text: string): boolean {
@@ -643,12 +667,45 @@ const REPETITION_EN = [
   /\bi keep saying\b/i,
 ];
 
-const REPETITION_HE = ['אני אומר שוב', 'אמרתי כבר', 'כמו שאמרתי', 'שוב אני אומר'];
+const REPETITION_HE = [
+  'אני אומר שוב',
+  'אמרתי כבר',
+  'כמו שאמרתי',
+  'שוב אני אומר',
+  // Live-session finding 2: the question-specific form of "I already said
+  // this" — a literal report of repeating a question, not a statement.
+  'זה מה ששאלתי',
+  'שאלתי כבר',
+  'כבר שאלתי',
+  'זאת השאלה שלי',
+  'על זה שאלתי',
+  'אני שואל שוב',
+];
 
 export function reportsRepetition(text: string): boolean {
   if (REPETITION_EN.some((p) => p.test(text))) return true;
   const lower = text.toLowerCase();
   return REPETITION_HE.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * Live-session finding 2, second part: a question of the form "what does
+ * X mean" immediately after the analyst returned X bare is a frame
+ * complaint about the method, not new material — he is asking why he only
+ * got the word back, not asking about the word's meaning as content.
+ * Requires both the general question shape AND that the question actually
+ * names the term just echoed, so an unrelated "what does X mean" (a
+ * genuine question about content) is not swept in.
+ */
+const MEANING_QUESTION_EN = /\bwhat does\b.*\bmean\b/i;
+const MEANING_QUESTION_HE = /מה\s+(?:ה)?משמעות\s+של/;
+
+export function isMeaningQuestionAboutLastEcho(userText: string, lastAnalystSay: string): boolean {
+  const hasMeaningQuestionShape = MEANING_QUESTION_EN.test(userText) || MEANING_QUESTION_HE.test(userText);
+  if (!hasMeaningQuestionShape) return false;
+  const echoedTerm = normalizeEchoedSignifier(lastAnalystSay);
+  if (!echoedTerm) return false;
+  return userText.toLowerCase().includes(echoedTerm);
 }
 
 /**

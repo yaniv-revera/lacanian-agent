@@ -13,6 +13,7 @@ import {
   nextUnusedMinimalForm,
   MINIMAL_FORMS,
   emptySayFallback,
+  maxTokenOverlap,
   type DraftRetryContext,
 } from './agent/guards.js';
 import { parseTurn } from './agent/parse.js';
@@ -37,6 +38,8 @@ import {
   endsOnImpliedWord,
   isSelfMarkedSignifier,
   hasUnshakeableCertaintyLanguage,
+  isBareEcho,
+  isMeaningQuestionAboutLastEcho,
 } from './agent/ledger.js';
 import { emptyLedger } from './types.js';
 import type { ParsedTurn } from './types.js';
@@ -366,6 +369,7 @@ const RETRY_CTX_BASE: DraftRetryContext = {
   userEndsOnImpliedWord: false,
   userMarkedSignifierAsOwn: false,
   userUnshakeableCertainty: false,
+  recentUserUtterances: [],
 };
 
 t('decideDraftRetry is null on a short window', () => {
@@ -2248,6 +2252,165 @@ t('auditTurn: A1 is now flagged as forbidden in ANCHORED, alongside the existing
     turnCount: 5,
   });
   assert.ok(f.includes('forbidden_act_in_anchored:A1'));
+});
+
+// --- live-session findings: content-based repetition, not act-label-based ---
+
+// Finding 1(d): investigated and confirmed — maxTokenOverlap's tokenize
+// filtered EVERY token as a stopword for an all-pronoun utterance like
+// "הם.", leaving an empty token set; jaccardOverlap's empty-set guard then
+// unconditionally returned 0, regardless of what it was compared against.
+// Two IDENTICAL all-stopword utterances therefore always scored 0 overlap.
+
+t('maxTokenOverlap: two identical all-stopword-only utterances now score full overlap (was 0 before the fix)', () => {
+  assert.equal(maxTokenOverlap('הם.', ['הם.']), 1);
+});
+
+t('maxTokenOverlap: genuinely different text still scores no overlap — the fallback does not manufacture false positives', () => {
+  assert.equal(maxTokenOverlap('they.', ['I ate an apple today.']), 0);
+});
+
+// Finding 1(a): a literal text repeat is blocked regardless of the act
+// label the model claims for it — this is the test requested explicitly:
+// the same bare word, three different act labels, blocked every time.
+
+t('literal_repeat: the same bare Hebrew word is blocked under three different act labels', () => {
+  const ctx = { ...RETRY_CTX_BASE, recentAnalystUtterances: ['הם.'] };
+  const asA1 = decideDraftRetry(pt({ act: 'A1', mode: 'ANALYTIC', say: 'הם.' }), ctx);
+  const asA3 = decideDraftRetry(pt({ act: 'A3', mode: 'ANALYTIC', say: 'הם.' }), ctx);
+  const asA2 = decideDraftRetry(pt({ act: 'A2', mode: 'ANALYTIC', say: 'הם.' }), ctx);
+  assert.equal(asA1?.kind, 'literal_repeat');
+  assert.equal(asA3?.kind, 'literal_repeat');
+  assert.equal(asA2?.kind, 'literal_repeat');
+});
+
+t('literal_repeat: normalises punctuation before comparing', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', mode: 'ANALYTIC', say: 'הם' }), {
+    ...RETRY_CTX_BASE,
+    recentAnalystUtterances: ['הם.'],
+  });
+  assert.equal(r?.kind, 'literal_repeat');
+});
+
+t('literal_repeat: does not fire on genuinely different text', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', mode: 'ANALYTIC', say: 'Go on.' }), {
+    ...RETRY_CTX_BASE,
+    recentAnalystUtterances: ['הם.'],
+  });
+  assert.equal(r, null);
+});
+
+t('literal_repeat: excluded in GATE, matching every other stylistic hard block', () => {
+  const r = decideDraftRetry(pt({ act: 'GATE', mode: 'GATE', say: 'הם.' }), {
+    ...RETRY_CTX_BASE,
+    recentAnalystUtterances: ['הם.'],
+  });
+  assert.equal(r, null);
+});
+
+// Finding 1(b) + 1(c): content-based echo detection and A16 reclassification.
+
+t('isBareEcho: a short bare word drawn from the analysand himself is an echo', () => {
+  assert.equal(isBareEcho('הם.', ['הם תמיד עוזבים אותי בסוף.']), true);
+});
+
+t('isBareEcho: a short word not present in his recent speech is not an echo', () => {
+  assert.equal(isBareEcho('שלום.', ['הם תמיד עוזבים אותי בסוף.']), false);
+});
+
+t('isBareEcho: a longer original sentence is not a bare echo, even if short', () => {
+  assert.equal(isBareEcho('I hear that.', ['he never called me back.']), false);
+});
+
+t('isBareEcho: empty text is not an echo', () => {
+  assert.equal(isBareEcho('', ['anything']), false);
+});
+
+t('decideDraftRetry: A16 rules (dangerous word) apply to a bare echo even labelled A1', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', mode: 'ANALYTIC', say: 'Disappear.' }), {
+    ...RETRY_CTX_BASE,
+    recentUserUtterances: ['sometimes I think I should just disappear.'],
+  });
+  assert.equal(r?.kind, 'a16_dangerous_word');
+});
+
+t('decideDraftRetry: A16 cap applies to a bare echo even labelled A3', () => {
+  const r = decideDraftRetry(pt({ act: 'A3', mode: 'ANALYTIC', say: 'הם.' }), {
+    ...RETRY_CTX_BASE,
+    recentUserUtterances: ['הם תמיד עוזבים אותי בסוף.'],
+    a16CountThisSession: 3, // at config's default cap
+  });
+  assert.equal(r?.kind, 'a16_cap');
+});
+
+t('decideDraftRetry: an ordinary, non-echoing A1 minimal act is unaffected', () => {
+  const r = decideDraftRetry(pt({ act: 'A1', mode: 'ANALYTIC', say: 'Go on.' }), {
+    ...RETRY_CTX_BASE,
+    recentUserUtterances: ['הם תמיד עוזבים אותי בסוף.'],
+  });
+  assert.equal(r, null);
+});
+
+// Full scenario: the exact reported failure, turns 18/21/22, replayed
+// through the real pure functions with ledger state threaded between
+// calls exactly as session.ts would.
+
+t('full scenario: turns 18, 21, 22 all echo the same bare word under different act labels — later ones are blocked', () => {
+  const userSaid = 'הם תמיד עוזבים אותי בסוף.';
+  let ledger = emptyLedger();
+
+  // Turn 18: first occurrence, labelled A1. Nothing on record yet to block
+  // against, but the echo is content-based, so it gets recorded as if it
+  // were A16 regardless of the claimed label.
+  const turn18 = pt({ act: 'A1', mode: 'ANALYTIC', say: 'הם.' });
+  const ctx18: DraftRetryContext = { ...RETRY_CTX_BASE, recentUserUtterances: [userSaid] };
+  assert.equal(decideDraftRetry(turn18, ctx18), null);
+
+  const effectiveAct18 = isBareEcho(turn18.say, [userSaid]) ? 'A16' : turn18.act;
+  assert.equal(effectiveAct18, 'A16');
+  ledger = recordEchoedSignifier(ledger, effectiveAct18, turn18.say, 18);
+  assert.deepEqual(ledger.echoed_signifiers.map((e) => e.term), ['הם']);
+
+  // Turn 21, labelled A3: within the 5-turn cooldown of turn 18's echo.
+  const blockedAt21 = blockedSignifiers(ledger.echoed_signifiers, 21, [{ idx: 19, text: userSaid }]);
+  const turn21 = pt({ act: 'A3', mode: 'ANALYTIC', say: 'הם.' });
+  const r21 = decideDraftRetry(turn21, { ...RETRY_CTX_BASE, recentUserUtterances: [userSaid], blockedSignifiers: blockedAt21 });
+  assert.equal(r21?.kind, 'echoed_signifier');
+
+  // Turn 22, labelled A2: same word, one turn later, must also be blocked.
+  const blockedAt22 = blockedSignifiers(ledger.echoed_signifiers, 22, [{ idx: 19, text: userSaid }]);
+  const turn22 = pt({ act: 'A2', mode: 'ANALYTIC', say: 'הם.' });
+  const r22 = decideDraftRetry(turn22, { ...RETRY_CTX_BASE, recentUserUtterances: [userSaid], blockedSignifiers: blockedAt22 });
+  assert.equal(r22?.kind, 'echoed_signifier');
+});
+
+// --- finding 2: Hebrew frame-complaint / repetition gap ---
+
+t('reportsRepetition: new Hebrew "already asked" phrasings', () => {
+  assert.equal(reportsRepetition('זה מה ששאלתי.'), true);
+  assert.equal(reportsRepetition('שאלתי כבר על זה.'), true);
+  assert.equal(reportsRepetition('כבר שאלתי את זה.'), true);
+  assert.equal(reportsRepetition('זאת השאלה שלי.'), true);
+  assert.equal(reportsRepetition('על זה שאלתי.'), true);
+  assert.equal(reportsRepetition('אני שואל שוב.'), true);
+});
+
+t('isFrameComplaint: new Hebrew "you did not answer" phrasings', () => {
+  assert.equal(isFrameComplaint('לא ענית.'), true);
+  assert.equal(isFrameComplaint('אתה לא עונה לי.'), true);
+});
+
+t('isMeaningQuestionAboutLastEcho: asking what a just-echoed word means is a frame complaint', () => {
+  assert.equal(isMeaningQuestionAboutLastEcho('מה המשמעות של הם?', 'הם.'), true);
+  assert.equal(isMeaningQuestionAboutLastEcho('What does "enough" mean?', 'Enough.'), true);
+});
+
+t('isMeaningQuestionAboutLastEcho: does not fire on an unrelated meaning-question', () => {
+  assert.equal(isMeaningQuestionAboutLastEcho('מה המשמעות של החיים?', 'הם.'), false);
+});
+
+t('isMeaningQuestionAboutLastEcho: does not fire without the "what does X mean" shape at all', () => {
+  assert.equal(isMeaningQuestionAboutLastEcho('אני לא מבין.', 'Enough.'), false);
 });
 
 await Promise.all(pending);

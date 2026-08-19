@@ -1,6 +1,6 @@
 import { config } from '../config.js';
 import { parseTurn } from './parse.js';
-import { STOP } from './ledger.js';
+import { STOP, isBareEcho, normalizeEchoedSignifier } from './ledger.js';
 import type { EndDecision, ParsedTurn } from '../types.js';
 
 /**
@@ -146,8 +146,19 @@ function wouldBeThirdConsecutive(act: string | null, recentActs: string[]): bool
   return lastTwo.length === 2 && lastTwo.every((a) => a === act);
 }
 
+/**
+ * Live-session finding 1(d): an utterance made ENTIRELY of stop-words (a
+ * bare pronoun echo, "הם.") filtered down to an empty token set, and
+ * jaccardOverlap's empty-set guard unconditionally returns 0 in that case
+ * regardless of what it's compared against — so two IDENTICAL all-stopword
+ * utterances always scored 0 overlap. Falls back to the raw (unfiltered)
+ * tokens only when filtering would otherwise erase the utterance entirely;
+ * for any text with at least one content word, behavior is unchanged.
+ */
 function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(/[\p{L}\p{M}']{2,}/gu) ?? []).filter((w) => !STOP.has(w));
+  const raw = text.toLowerCase().match(/[\p{L}\p{M}']{2,}/gu) ?? [];
+  const filtered = raw.filter((w) => !STOP.has(w));
+  return filtered.length > 0 ? filtered : raw;
 }
 
 function jaccardOverlap(a: string[], b: string[]): number {
@@ -161,7 +172,7 @@ function jaccardOverlap(a: string[], b: string[]): number {
 }
 
 /** Highest token-overlap ratio between `say` and any of `recentUtterances`. */
-function maxTokenOverlap(say: string, recentUtterances: string[]): number {
+export function maxTokenOverlap(say: string, recentUtterances: string[]): number {
   const tokens = tokenize(say);
   let max = 0;
   for (const u of recentUtterances) {
@@ -324,7 +335,8 @@ export type DraftRetryReason =
   | { kind: 'near_duplicate'; overlap: number }
   | { kind: 'completing_interrupted_sentence' }
   | { kind: 'a16_self_marked_signifier' }
-  | { kind: 'a15_unshakeable_certainty' };
+  | { kind: 'a15_unshakeable_certainty' }
+  | { kind: 'literal_repeat' };
 
 /**
  * Conduct item 1: acts structurally incapable of supplying the missing word
@@ -365,6 +377,12 @@ export interface DraftRetryContext {
   userMarkedSignifierAsOwn: boolean;
   /** Conduct item 3: does the analysand's current turn carry unshakeable, world-organising certainty? */
   userUnshakeableCertainty: boolean;
+  /**
+   * Live-session finding 1(b)/(c): the analysand's own recent utterances
+   * this session, used to detect a bare echo (ledger.isBareEcho) regardless
+   * of what act the model claims for it.
+   */
+  recentUserUtterances: string[];
 }
 
 /**
@@ -433,7 +451,13 @@ export function decideDraftRetry(p: ParsedTurn, ctx: DraftRetryContext): DraftRe
   // Conduct item 3 (Seminar III p.157): additive to the existing exclusion above.
   if (p.act === 'A15' && ctx.userUnshakeableCertainty) return { kind: 'a15_unshakeable_certainty' };
 
-  if (p.act === 'A16') {
+  // Live-session finding 1(c): a bare signifier returned as a whole turn IS
+  // A16 by definition — apply its rules whenever the content qualifies,
+  // regardless of what act the model actually claimed. This is what closes
+  // the exact reported failure: the model correctly reasoned in its own
+  // work block that A16 was unavailable, then relabelled the identical
+  // echo A1 and every A16-specific check passed it through unchecked.
+  if (p.act === 'A16' || isBareEcho(p.say, ctx.recentUserUtterances)) {
     const dangerousWord = findA16DangerousWord(p.say);
     if (dangerousWord) return { kind: 'a16_dangerous_word', word: dangerousWord };
     // Conduct item 2 (Seminar III p.54-55).
@@ -446,6 +470,14 @@ export function decideDraftRetry(p: ParsedTurn, ctx: DraftRetryContext): DraftRe
   const lowerSay = p.say.toLowerCase();
   const blockedHit = ctx.blockedSignifiers.find((term) => lowerSay.includes(term));
   if (blockedHit) return { kind: 'echoed_signifier', term: blockedHit };
+
+  // Live-session finding 1(a): an exact text repeat, independent of act
+  // label — checked before the fuzzy near-duplicate check below, since it
+  // is the more direct and more certain of the two for exactly this case.
+  const normalizedSay = normalizeEchoedSignifier(p.say);
+  if (normalizedSay && ctx.recentAnalystUtterances.some((u) => normalizeEchoedSignifier(u) === normalizedSay)) {
+    return { kind: 'literal_repeat' };
+  }
 
   const overlap = maxTokenOverlap(p.say, ctx.recentAnalystUtterances);
   if (overlap > 0.7) return { kind: 'near_duplicate', overlap };
@@ -583,6 +615,8 @@ export function retryOverrideMessage(reason: DraftRetryReason): string {
       return `\n\nSERVER OVERRIDE: he has marked a signifier as specially his own and charged this turn. A16 is forbidden — echoing it back adds the weight of the Other to something that is already fully his. Choose a different act.`;
     case 'a15_unshakeable_certainty':
       return `\n\nSERVER OVERRIDE: what he said carries unshakeable certainty and organises how he understands his own reality — it is not borrowed vocabulary, even if it sounds like it. A15 is forbidden this turn — choose a different act.`;
+    case 'literal_repeat':
+      return `\n\nSERVER OVERRIDE: this is word-for-word identical to something you already said this session, regardless of what act you have labelled it. Relabelling it does not make it new. Say something materially different, or use a minimal act instead.`;
   }
 }
 
@@ -622,6 +656,8 @@ export function retryFailureFlag(reason: DraftRetryReason): string {
       return 'a16_self_marked_signifier_retry_failed';
     case 'a15_unshakeable_certainty':
       return 'a15_unshakeable_certainty_retry_failed';
+    case 'literal_repeat':
+      return 'literal_repeat_retry_failed';
   }
 }
 

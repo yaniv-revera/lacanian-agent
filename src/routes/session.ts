@@ -44,8 +44,10 @@ import {
   hasUnshakeableCertaintyLanguage,
   isA14Excluded,
   isA15Excluded,
+  isBareEcho,
   isExplicitCrisisLanguage,
   isFrameComplaint,
+  isMeaningQuestionAboutLastEcho,
   isSelfMarkedSignifier,
   isSessionOpeningTrigger,
   recordAnalystNote,
@@ -184,10 +186,13 @@ sessionRouter.post('/say', async (req, res) => {
   );
   const assentCountLast5 = assentRunStats(userTurns.map((t) => t.text)).count;
 
+  // Live-session finding 1(a): widened from 3 to 5 turns — the reported
+  // failure (turns 18/21/22 repeating the same bare word) needed a wider
+  // window for the literal-repeat check to see the earlier occurrence.
   const recentAnalystUtterances = allTurns
     .filter((t) => t.role === 'analyst')
     .map((t) => t.text)
-    .slice(-3);
+    .slice(-5);
 
   const a16CountThisSession = countAct(s.id, 'A16');
 
@@ -205,7 +210,9 @@ sessionRouter.post('/say', async (req, res) => {
         .filter((f): f is string => f !== null),
     ),
   ];
-  const userFrameComplaint = isFrameComplaint(text);
+  const recentUserUtterances = userTurns.map((t) => t.text);
+  const userFrameComplaint =
+    isFrameComplaint(text) || isMeaningQuestionAboutLastEcho(text, recentAnalystUtterances.at(-1) ?? '');
   const userReportsRepetition = reportsRepetition(text);
   const userA14Excluded = isA14Excluded(text);
   const userA15Excluded = isA15Excluded(text);
@@ -271,6 +278,7 @@ sessionRouter.post('/say', async (req, res) => {
         userEndsOnImpliedWord,
         userMarkedSignifierAsOwn,
         userUnshakeableCertainty,
+        recentUserUtterances,
       },
       async (reason) => {
         const retrySystem = {
@@ -322,15 +330,26 @@ sessionRouter.post('/say', async (req, res) => {
   if (parsed.wantsEnd && !decision.allowed) flags.push(`end_refused:${decision.reason}`);
   if (desupposition) flags.push('desupposition_by_user');
   if (retryFailFlag) flags.push(retryFailFlag);
+
+  // Live-session finding 1(c): a bare echo is A16 by definition regardless
+  // of the claimed label — reclassify what actually gets PERSISTED, not
+  // just what decideDraftRetry reasoned about in memory. Without this, the
+  // database keeps the model's own (wrong) label, and every future turn's
+  // a16CountThisSession/recentActs-based cap and window checks stay blind
+  // to it — the exact gap the reported failure exploited.
+  const sayIsBareEcho = isBareEcho(parsed.say, recentUserUtterances);
+  const effectiveAct = sayIsBareEcho && parsed.act !== 'A16' ? 'A16' : parsed.act;
+  if (sayIsBareEcho && parsed.act !== 'A16') flags.push(`act_reclassified:${parsed.act}->A16`);
+
   if (flags.length) console.error(`[audit s${s.id} t${nextIdx}]`, flags.join(' '));
 
   const workLog = [parsed.work, flags.length ? `\n[server flags] ${flags.join(' ')}` : ''].join('');
-  appendTurn(s.id, nextIdx, 'analyst', parsed.say, workLog, parsed.act ?? undefined);
+  appendTurn(s.id, nextIdx, 'analyst', parsed.say, workLog, effectiveAct ?? undefined);
 
   const ledgerAfterAnalyst = recordNominations(
     recordEchoedSignifier(
       recordAnalystNote({ ...afterUser, session_count: s.session_index }, parsed.ledgerNote),
-      parsed.act,
+      effectiveAct,
       parsed.say,
       nextIdx,
     ),
